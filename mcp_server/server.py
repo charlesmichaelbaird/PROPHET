@@ -6,7 +6,7 @@ from mcp_server.tools import clean_text, fetch_url, summarize_text
 
 
 def run_pipeline(url: str) -> dict[str, str]:
-    """Run URL -> cleaned text -> (stub) summary with simple error reporting."""
+    """Run URL -> cleaned text -> summary with simple error reporting."""
     try:
         html = fetch_url(url)
         cleaned_text = clean_text(html)
