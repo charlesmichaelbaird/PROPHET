@@ -69,7 +69,16 @@ html, body, [data-testid="stAppViewContainer"], .stApp {
 if "analysis_result" not in st.session_state:
     st.session_state.analysis_result = None
 
-now_utc = datetime.now(timezone.utc)
+
+@st.fragment(run_every=1)
+def render_meta_chips() -> None:
+    now_utc = datetime.now(timezone.utc)
+    st.markdown(
+        f'<span class="meta-chip">DATE • {now_utc:%Y-%m-%d}</span>'
+        f'<span class="meta-chip">UTC • {now_utc:%H:%M:%S}</span>'
+        '<span class="meta-chip">MODE • ZERO-COST NO-LLM</span>',
+        unsafe_allow_html=True,
+    )
 
 st.markdown('<section class="hero">', unsafe_allow_html=True)
 st.markdown('<p class="brand">PROPHET</p>', unsafe_allow_html=True)
@@ -81,12 +90,7 @@ st.markdown(
     '<p class="small">Zero-cost / no-LLM homepage article analysis and word frequency dashboard.</p>',
     unsafe_allow_html=True,
 )
-st.markdown(
-    f'<span class="meta-chip">DATE • {now_utc:%Y-%m-%d}</span>'
-    f'<span class="meta-chip">UTC • {now_utc:%H:%M:%S}</span>'
-    '<span class="meta-chip">MODE • ZERO-COST NO-LLM</span>',
-    unsafe_allow_html=True,
-)
+render_meta_chips()
 st.markdown("</section>", unsafe_allow_html=True)
 
 left, right = st.columns([1.05, 1.6], gap="large")
