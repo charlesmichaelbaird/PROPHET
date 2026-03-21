@@ -122,6 +122,7 @@ with right:
         c2.metric("Articles scraped", result["articles_scraped"])
 
         st.markdown("**Top 10 most common words**")
+        st.caption("Common stopwords, month/day/date terms, and source-noise words (e.g., photo/file/ap/news/said) are excluded.")
         top_words = result.get("top_words", [])
         if top_words:
             rows = [
