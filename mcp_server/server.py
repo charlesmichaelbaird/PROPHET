@@ -15,7 +15,9 @@ def run_pipeline(homepage_url: str, max_articles: int = 20) -> dict:
             "ok": "false",
             "error": f"Invalid URL: {exc}",
             "links_found": 0,
+            "articles_attempted": 0,
             "articles_scraped": 0,
+            "articles_failed": 0,
             "scraped_preview": [],
             "top_words": [],
         }
@@ -24,7 +26,9 @@ def run_pipeline(homepage_url: str, max_articles: int = 20) -> dict:
             "ok": "false",
             "error": f"Request failed: {exc}",
             "links_found": 0,
+            "articles_attempted": 0,
             "articles_scraped": 0,
+            "articles_failed": 0,
             "scraped_preview": [],
             "top_words": [],
         }

@@ -117,9 +117,11 @@ with right:
     elif result["ok"] == "false":
         st.error(result["error"])
     else:
-        c1, c2 = st.columns(2)
+        c1, c2, c3, c4 = st.columns(4)
         c1.metric("Links found", result["links_found"])
-        c2.metric("Articles scraped", result["articles_scraped"])
+        c2.metric("Articles attempted", result.get("articles_attempted", 0))
+        c3.metric("Articles scraped", result["articles_scraped"])
+        c4.metric("Articles failed", result.get("articles_failed", 0))
 
         st.markdown("**Top 10 most common words**")
         st.caption("Common stopwords, month/day/date terms, and source-noise words (e.g., photo/file/ap/news/said) are excluded.")
@@ -142,7 +144,10 @@ with right:
         preview = result.get("scraped_preview", [])
         if preview:
             for entry in preview:
-                st.markdown(f"- [{entry['title']}]({entry['url']})")
+                title = entry.get("title", entry["url"])
+                word_count = entry.get("word_count")
+                suffix = f" · {word_count} filtered words" if word_count else ""
+                st.markdown(f"- [{title}]({entry['url']}){suffix}")
         else:
             st.markdown('<div class="small">No article previews available.</div>', unsafe_allow_html=True)
 
