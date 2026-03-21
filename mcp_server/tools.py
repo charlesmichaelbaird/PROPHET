@@ -10,7 +10,7 @@ from urllib.parse import urljoin, urlparse, urlunparse
 
 import requests
 
-_STOPWORDS = {
+_BASE_STOPWORDS = {
     "a", "about", "above", "after", "again", "against", "all", "am", "an", "and", "any", "are", "as",
     "at", "be", "because", "been", "before", "being", "below", "between", "both", "but", "by", "can",
     "could", "did", "do", "does", "doing", "down", "during", "each", "few", "for", "from", "further",
@@ -21,8 +21,32 @@ _STOPWORDS = {
     "that", "the", "their", "theirs", "them", "themselves", "then", "there", "these", "they", "this",
     "those", "through", "to", "too", "under", "until", "up", "very", "was", "we", "were", "what", "when",
     "where", "which", "while", "who", "whom", "why", "with", "would", "you", "your", "yours", "yourself",
-    "yourselves", "will", "also", "said", "says", "say", "get", "got", "like", "one", "two", "new",
+    "yourselves", "will", "also", "says", "say", "get", "got", "like", "one", "two", "new",
 }
+
+_MONTH_STOPWORDS = {
+    "january", "february", "march", "april", "may", "june",
+    "july", "august", "september", "october", "november", "december",
+    "jan", "feb", "mar", "apr", "jun", "jul", "aug", "sep", "sept", "oct", "nov", "dec",
+}
+
+_DAY_STOPWORDS = {
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+    "mon", "tue", "tues", "wed", "thu", "thur", "thurs", "fri", "sat", "sun",
+    "today", "tomorrow", "yesterday",
+}
+
+_DATE_AND_FORMAT_STOPWORDS = {
+    "photo", "photos", "photograph", "file", "files", "ap", "news", "said",
+    "copyright", "published", "updated", "newsletter", "breaking", "read", "story",
+}
+
+_STOPWORDS = (
+    _BASE_STOPWORDS
+    | _MONTH_STOPWORDS
+    | _DAY_STOPWORDS
+    | _DATE_AND_FORMAT_STOPWORDS
+)
 
 
 class ArticleLinkParser(HTMLParser):
@@ -192,6 +216,11 @@ def _tokenize(text: str) -> list[str]:
     return re.findall(r"[a-zA-Z]{3,}", text.lower())
 
 
+def _filter_tokens(text: str) -> list[str]:
+    """Tokenize and remove low-value words before frequency calculations."""
+    return [token for token in _tokenize(text) if token not in _STOPWORDS]
+
+
 def analyze_homepage(homepage_url: str, max_articles: int = 20) -> dict:
     """Scrape homepage article links and compute top-word metrics without LLMs."""
     homepage_html = fetch_url(homepage_url)
@@ -211,7 +240,7 @@ def analyze_homepage(homepage_url: str, max_articles: int = 20) -> dict:
             if not article_text:
                 continue
 
-            tokens = [token for token in _tokenize(article_text) if token not in _STOPWORDS]
+            tokens = _filter_tokens(article_text)
             if not tokens:
                 continue
 
