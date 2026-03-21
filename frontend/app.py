@@ -74,7 +74,11 @@ now_utc = datetime.now(timezone.utc)
 st.markdown('<section class="hero">', unsafe_allow_html=True)
 st.markdown('<p class="brand">PROPHET</p>', unsafe_allow_html=True)
 st.markdown(
-    '<p class="subtitle">Zero-cost / no-LLM homepage article analysis and word frequency dashboard.</p>',
+    '<p class="subtitle">Predictive Reasoning of Probabilistic Hypotheses and Event Tracking</p>',
+    unsafe_allow_html=True,
+)
+st.markdown(
+    '<p class="small">Zero-cost / no-LLM homepage article analysis and word frequency dashboard.</p>',
     unsafe_allow_html=True,
 )
 st.markdown(
