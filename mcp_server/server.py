@@ -5,14 +5,32 @@ from __future__ import annotations
 from mcp_server.tools import clean_text, fetch_url, summarize_text
 
 
-def run_pipeline(url: str) -> str:
-    """Run the tiny URL -> cleaned text -> summary pipeline."""
+def run_pipeline(url: str) -> dict[str, str]:
+    """Run URL -> cleaned text -> (stub) summary with simple error reporting."""
     try:
         html = fetch_url(url)
-        text = clean_text(html)
-        return summarize_text(text)
-    except Exception as exc:  # Keep error handling simple for milestone 1.
-        return f"Error: {exc}"
+        cleaned_text = clean_text(html)
+        summary = summarize_text(cleaned_text)
+        return {
+            "ok": "true",
+            "cleaned_text": cleaned_text,
+            "summary": summary,
+            "error": "",
+        }
+    except ValueError as exc:
+        return {
+            "ok": "false",
+            "cleaned_text": "",
+            "summary": "",
+            "error": f"Invalid URL: {exc}",
+        }
+    except Exception as exc:
+        return {
+            "ok": "false",
+            "cleaned_text": "",
+            "summary": "",
+            "error": f"Request failed: {exc}",
+        }
 
 
 # MCP-style registry to show intended tool exposure.

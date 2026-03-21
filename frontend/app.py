@@ -15,4 +15,12 @@ if st.button("Run"):
     else:
         with st.spinner("Fetching and processing..."):
             result = run_pipeline(url.strip())
-        st.text_area("Result", value=result, height=320)
+
+        if result["ok"] == "false":
+            st.error(result["error"])
+        else:
+            st.subheader("Stub Summary")
+            st.text_area("Summary", value=result["summary"], height=160)
+
+            st.subheader("Cleaned Text")
+            st.text_area("Visible text extracted from page", value=result["cleaned_text"], height=320)
