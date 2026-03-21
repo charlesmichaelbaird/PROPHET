@@ -3,8 +3,16 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
+import sys
 
 import streamlit as st
+
+# Ensure repository root is importable when running
+# `streamlit run frontend/app.py` from any working directory.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from mcp_server.server import run_pipeline
 
