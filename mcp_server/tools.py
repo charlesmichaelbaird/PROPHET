@@ -130,6 +130,45 @@ class ArticleTextParser(HTMLParser):
         return " ".join(self._paragraphs)
 
 
+class DocumentTitleParser(HTMLParser):
+    """Extract a best-effort page title from HTML metadata or <title>."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._in_title = False
+        self._title_parts: list[str] = []
+        self.meta_title = ""
+
+    def handle_starttag(self, tag: str, attrs) -> None:  # type: ignore[override]
+        lowered = tag.lower()
+        if lowered == "title":
+            self._in_title = True
+            return
+
+        if lowered != "meta":
+            return
+
+        attr_map = {str(key).lower(): str(value) for key, value in attrs if value}
+        marker = attr_map.get("property") or attr_map.get("name")
+        content = attr_map.get("content", "").strip()
+        if marker and marker.lower() in {"og:title", "twitter:title"} and content and not self.meta_title:
+            self.meta_title = content
+
+    def handle_endtag(self, tag: str) -> None:  # type: ignore[override]
+        if tag.lower() == "title":
+            self._in_title = False
+
+    def handle_data(self, data: str) -> None:  # type: ignore[override]
+        if self._in_title:
+            cleaned = data.strip()
+            if cleaned:
+                self._title_parts.append(cleaned)
+
+    def get_title(self) -> str:
+        title_tag = " ".join(self._title_parts).strip()
+        return self.meta_title or title_tag
+
+
 def fetch_url(url: str, timeout: int = 10) -> str:
     """Fetch raw HTML for a URL with basic validation and error messages."""
     parsed = urlparse(url)
@@ -212,6 +251,14 @@ def extract_article_text(article_html: str) -> str:
     return clean
 
 
+def extract_document_title(article_html: str) -> str:
+    """Extract a human-readable title from a page."""
+    parser = DocumentTitleParser()
+    parser.feed(article_html)
+    parser.close()
+    return re.sub(r"\s+", " ", unescape(parser.get_title())).strip()
+
+
 def _tokenize(text: str) -> list[str]:
     return re.findall(r"[a-zA-Z]{3,}", text.lower())
 
@@ -229,6 +276,7 @@ def analyze_homepage(homepage_url: str, max_articles: int = 20) -> dict:
     word_totals: Counter[str] = Counter()
     article_frequency: Counter[str] = Counter()
     scraped_articles: list[dict[str, str]] = []
+    failed_urls: list[str] = []
 
     for link in link_entries:
         if len(scraped_articles) >= max_articles:
@@ -236,6 +284,7 @@ def analyze_homepage(homepage_url: str, max_articles: int = 20) -> dict:
 
         try:
             article_html = fetch_url(link["url"], timeout=12)
+            page_title = extract_document_title(article_html)
             article_text = extract_article_text(article_html)
             if not article_text:
                 continue
@@ -247,8 +296,15 @@ def analyze_homepage(homepage_url: str, max_articles: int = 20) -> dict:
             token_counts = Counter(tokens)
             word_totals.update(token_counts)
             article_frequency.update(token_counts.keys())
-            scraped_articles.append({"url": link["url"], "title": link["title"] or link["url"]})
+            scraped_articles.append(
+                {
+                    "url": link["url"],
+                    "title": page_title or link["title"] or link["url"],
+                    "word_count": len(tokens),
+                }
+            )
         except Exception:
+            failed_urls.append(link["url"])
             continue
 
     article_count = len(scraped_articles)
@@ -267,7 +323,9 @@ def analyze_homepage(homepage_url: str, max_articles: int = 20) -> dict:
 
     return {
         "links_found": len(link_entries),
+        "articles_attempted": min(len(link_entries), max_articles),
         "articles_scraped": article_count,
+        "articles_failed": len(failed_urls),
         "scraped_preview": scraped_articles[:8],
         "top_words": table_rows,
     }
