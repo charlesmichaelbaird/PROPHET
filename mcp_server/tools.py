@@ -268,6 +268,83 @@ def _filter_tokens(text: str) -> list[str]:
     return [token for token in _tokenize(text) if token not in _STOPWORDS]
 
 
+def _split_sentences(text: str) -> list[str]:
+    """Split text into rough sentences using punctuation boundaries."""
+    chunks = re.split(r"(?<=[.!?])\s+", text)
+    cleaned = [chunk.strip() for chunk in chunks if chunk and len(chunk.strip()) >= 40]
+    return cleaned
+
+
+def _extract_top_phrases(article_texts: list[str], max_phrases: int = 3) -> list[str]:
+    """Extract recurring two-word phrases from filtered article tokens."""
+    phrase_counts: Counter[str] = Counter()
+    for article_text in article_texts:
+        tokens = _filter_tokens(article_text)
+        for first, second in zip(tokens, tokens[1:]):
+            phrase = f"{first} {second}"
+            phrase_counts[phrase] += 1
+
+    recurring = [phrase for phrase, count in phrase_counts.most_common(30) if count >= 2]
+    return recurring[:max_phrases]
+
+
+def build_summary(
+    article_texts: list[str],
+    top_words: list[dict[str, float]],
+    articles_scraped: int,
+    links_found: int,
+) -> str:
+    """
+    Build a short, heuristic narrative summary of the scraped corpus.
+
+    The summary combines: (1) broad coverage stats, (2) recurring high-value
+    terms, (3) repeated short phrases, and (4) one representative sentence
+    selected with a term-overlap score.
+    """
+    if not article_texts or not top_words:
+        return (
+            "Summary unavailable because there was not enough clean article text "
+            "to extract recurring terms."
+        )
+
+    focus_words = [row["word"] for row in top_words[:5]]
+    focus_terms = ", ".join(focus_words[:-1]) + f", and {focus_words[-1]}" if len(focus_words) > 1 else focus_words[0]
+
+    phrase_list = _extract_top_phrases(article_texts, max_phrases=3)
+    phrase_text = ""
+    if phrase_list:
+        joined_phrases = ", ".join(f'"{phrase}"' for phrase in phrase_list)
+        phrase_text = f" Repeated phrase signals include {joined_phrases}."
+
+    candidate_sentences: list[str] = []
+    for article_text in article_texts:
+        candidate_sentences.extend(_split_sentences(article_text))
+
+    best_sentence = ""
+    if candidate_sentences:
+        scored = []
+        focus_set = set(focus_words)
+        for sentence in candidate_sentences:
+            sentence_tokens = set(_filter_tokens(sentence))
+            score = len(sentence_tokens.intersection(focus_set))
+            if 10 <= len(sentence.split()) <= 34:
+                scored.append((score, sentence))
+        if scored:
+            scored.sort(key=lambda item: item[0], reverse=True)
+            best_sentence = scored[0][1]
+
+    coverage_rate = (articles_scraped / links_found * 100) if links_found else 0.0
+    summary = (
+        f"From {articles_scraped} scraped articles out of {links_found} discovered links "
+        f"({coverage_rate:.0f}% coverage), the dominant themes center on {focus_terms}."
+        f"{phrase_text}"
+    )
+    if best_sentence:
+        summary += f" A representative line from the corpus is: {best_sentence}"
+
+    return summary
+
+
 def analyze_homepage(homepage_url: str, max_articles: int = 20) -> dict:
     """Scrape homepage article links and compute top-word metrics without LLMs."""
     homepage_html = fetch_url(homepage_url)
@@ -276,6 +353,7 @@ def analyze_homepage(homepage_url: str, max_articles: int = 20) -> dict:
     word_totals: Counter[str] = Counter()
     article_frequency: Counter[str] = Counter()
     scraped_articles: list[dict[str, str]] = []
+    article_texts: list[str] = []
     failed_urls: list[str] = []
 
     for link in link_entries:
@@ -296,6 +374,7 @@ def analyze_homepage(homepage_url: str, max_articles: int = 20) -> dict:
             token_counts = Counter(tokens)
             word_totals.update(token_counts)
             article_frequency.update(token_counts.keys())
+            article_texts.append(article_text)
             scraped_articles.append(
                 {
                     "url": link["url"],
@@ -321,6 +400,13 @@ def analyze_homepage(homepage_url: str, max_articles: int = 20) -> dict:
             }
         )
 
+    summary = build_summary(
+        article_texts=article_texts,
+        top_words=table_rows,
+        articles_scraped=article_count,
+        links_found=len(link_entries),
+    )
+
     return {
         "links_found": len(link_entries),
         "articles_attempted": min(len(link_entries), max_articles),
@@ -328,4 +414,5 @@ def analyze_homepage(homepage_url: str, max_articles: int = 20) -> dict:
         "articles_failed": len(failed_urls),
         "scraped_preview": scraped_articles[:8],
         "top_words": table_rows,
+        "summary": summary,
     }

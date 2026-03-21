@@ -152,3 +152,19 @@ with right:
             st.markdown('<div class="small">No article previews available.</div>', unsafe_allow_html=True)
 
     st.markdown('</div>', unsafe_allow_html=True)
+
+result = st.session_state.analysis_result
+bottom_left, bottom_center, bottom_right = st.columns([1, 1.5, 1], gap="large")
+with bottom_center:
+    st.markdown('<div class="panel">', unsafe_allow_html=True)
+    st.markdown('<div class="panel-title">Prophet Summary</div>', unsafe_allow_html=True)
+    if not result:
+        st.markdown(
+            '<div class="small">Run analysis to generate a synthesized corpus summary.</div>',
+            unsafe_allow_html=True,
+        )
+    elif result["ok"] == "false":
+        st.markdown('<div class="small">Summary unavailable due to analysis error.</div>', unsafe_allow_html=True)
+    else:
+        st.write(result.get("summary", "No summary available for this run."))
+    st.markdown('</div>', unsafe_allow_html=True)
