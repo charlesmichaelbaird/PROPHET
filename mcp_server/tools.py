@@ -9,7 +9,6 @@ from html.parser import HTMLParser
 from urllib.parse import urlparse
 
 import requests
-from openai import OpenAI
 
 
 class VisibleTextParser(HTMLParser):
@@ -67,19 +66,28 @@ def clean_text(html: str) -> str:
     return normalized
 
 
-def summarize_text(text: str) -> str:
-    """Summarize text with OpenAI. Requires OPENAI_API_KEY and the openai package."""
-    if not text.strip():
-        return ""
-
+def _run_openai_summary(prompt: str) -> str:
+    """Run the OpenAI summarization request and return the stripped response text."""
     # Setup note: set OPENAI_API_KEY in your environment.
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY is not set")
 
+    from openai import OpenAI
+
     client = OpenAI(api_key=api_key)
     response = client.responses.create(
         model="gpt-4.1-mini",
-        input=f"Summarize this text in 2-4 short sentences:\n\n{text[:12000]}",
+        input=prompt,
     )
     return response.output_text.strip()
+
+
+def summarize_text(text: str) -> str:
+    """Summarize text with OpenAI. Requires OPENAI_API_KEY and the openai package."""
+    if not text.strip():
+        return ""
+
+    return _run_openai_summary(
+        f"Summarize this text in 2-4 short sentences:\n\n{text[:12000]}"
+    )
