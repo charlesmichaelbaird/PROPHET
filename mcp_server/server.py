@@ -20,6 +20,7 @@ def run_pipeline(homepage_url: str, max_articles: int = 20) -> dict:
             "articles_failed": 0,
             "scraped_preview": [],
             "top_words": [],
+            "summary": "",
         }
     except Exception as exc:
         return {
@@ -31,6 +32,7 @@ def run_pipeline(homepage_url: str, max_articles: int = 20) -> dict:
             "articles_failed": 0,
             "scraped_preview": [],
             "top_words": [],
+            "summary": "",
         }
 
 
