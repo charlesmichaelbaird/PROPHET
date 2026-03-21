@@ -98,6 +98,8 @@ with left:
 
     homepage_url = st.text_input("Source Homepage URL", value="https://apnews.com")
     max_articles = st.number_input("Max articles to scrape", min_value=5, max_value=50, value=20, step=5)
+    keyword_filter_enabled = st.checkbox("Enable keyword filtering", value=False)
+    keyword = st.text_input("Keyword (article-level match)", value="")
 
     run_clicked = st.button("Run Zero-Cost Analysis", use_container_width=True)
     clear_clicked = st.button("Reset Results", use_container_width=True)
@@ -107,7 +109,12 @@ with left:
 
     if run_clicked:
         with st.spinner("Fetching homepage and scraping articles..."):
-            st.session_state.analysis_result = run_pipeline(homepage_url.strip(), int(max_articles))
+            st.session_state.analysis_result = run_pipeline(
+                homepage_url.strip(),
+                int(max_articles),
+                keyword=keyword.strip(),
+                keyword_filter_enabled=keyword_filter_enabled,
+            )
 
     st.markdown('</div>', unsafe_allow_html=True)
 
@@ -121,11 +128,21 @@ with right:
     elif result["ok"] == "false":
         st.error(result["error"])
     else:
+        if result.get("keyword_filter_enabled"):
+            active_keyword = result.get("keyword", "")
+            st.success(f"Keyword filtering active: '{active_keyword}'")
+
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Links found", result["links_found"])
         c2.metric("Articles attempted", result.get("articles_attempted", 0))
         c3.metric("Articles scraped", result["articles_scraped"])
         c4.metric("Articles failed", result.get("articles_failed", 0))
+
+        if result.get("keyword_filter_enabled"):
+            k1, k2, k3 = st.columns(3)
+            k1.metric("Keyword", result.get("keyword", ""))
+            k2.metric("Matching articles", result.get("matching_articles", 0))
+            k3.metric("Candidate articles considered", result.get("candidate_articles_considered", 0))
 
         st.markdown("**Top 10 most common words**")
         st.caption("Common stopwords, month/day/date terms, and source-noise words (e.g., photo/file/ap/news/said) are excluded.")
@@ -154,6 +171,12 @@ with right:
                 st.markdown(f"- [{title}]({entry['url']}){suffix}")
         else:
             st.markdown('<div class="small">No article previews available.</div>', unsafe_allow_html=True)
+
+        suggestions = result.get("keyword_suggestions", [])
+        if result.get("keyword_filter_enabled") and suggestions:
+            st.markdown("**Suggested alternative keywords**")
+            st.caption("Low keyword hit count detected. Try one of these broader terms.")
+            st.write(", ".join(suggestions))
 
     st.markdown('</div>', unsafe_allow_html=True)
 

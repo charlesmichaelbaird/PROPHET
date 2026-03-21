@@ -345,21 +345,65 @@ def build_summary(
     return summary
 
 
-def analyze_homepage(homepage_url: str, max_articles: int = 20) -> dict:
+def _match_keyword(page_title: str, article_text: str, keyword: str) -> bool:
+    """Simple case-insensitive keyword matching against title/body content."""
+    normalized_keyword = keyword.strip().lower()
+    if not normalized_keyword:
+        return False
+
+    haystack = f"{page_title} {article_text}".lower()
+    return normalized_keyword in haystack
+
+
+def _suggest_alternative_keywords(
+    candidate_article_texts: list[str],
+    keyword: str,
+    max_suggestions: int = 5,
+) -> list[str]:
+    """Derive simple alternative keyword suggestions from broad candidate text."""
+    suggestion_counts: Counter[str] = Counter()
+    keyword_lower = keyword.strip().lower()
+
+    for text in candidate_article_texts:
+        suggestion_counts.update(_filter_tokens(text))
+
+    suggestions: list[str] = []
+    for word, _count in suggestion_counts.most_common(50):
+        if word == keyword_lower:
+            continue
+        suggestions.append(word)
+        if len(suggestions) >= max_suggestions:
+            break
+    return suggestions
+
+
+def analyze_homepage(
+    homepage_url: str,
+    max_articles: int = 20,
+    keyword: str = "",
+    keyword_filter_enabled: bool = False,
+) -> dict:
     """Scrape homepage article links and compute top-word metrics without LLMs."""
     homepage_html = fetch_url(homepage_url)
     link_entries = extract_article_links(homepage_html, homepage_url, max_links=max_articles * 3)
+
+    keyword_clean = keyword.strip()
+    keyword_mode_active = bool(keyword_filter_enabled)
 
     word_totals: Counter[str] = Counter()
     article_frequency: Counter[str] = Counter()
     scraped_articles: list[dict[str, str]] = []
     article_texts: list[str] = []
+    candidate_article_texts: list[str] = []
     failed_urls: list[str] = []
+    attempted_articles = 0
+    candidate_articles_considered = 0
 
     for link in link_entries:
-        if len(scraped_articles) >= max_articles:
+        if attempted_articles >= max_articles:
             break
 
+        attempted_articles += 1
         try:
             article_html = fetch_url(link["url"], timeout=12)
             page_title = extract_document_title(article_html)
@@ -369,6 +413,12 @@ def analyze_homepage(homepage_url: str, max_articles: int = 20) -> dict:
 
             tokens = _filter_tokens(article_text)
             if not tokens:
+                continue
+
+            candidate_articles_considered += 1
+            candidate_article_texts.append(f"{page_title} {article_text}")
+
+            if keyword_mode_active and not _match_keyword(page_title, article_text, keyword_clean):
                 continue
 
             token_counts = Counter(tokens)
@@ -400,19 +450,63 @@ def analyze_homepage(homepage_url: str, max_articles: int = 20) -> dict:
             }
         )
 
-    summary = build_summary(
-        article_texts=article_texts,
-        top_words=table_rows,
-        articles_scraped=article_count,
-        links_found=len(link_entries),
-    )
+    if keyword_mode_active:
+        if not keyword_clean:
+            summary = (
+                "Keyword filtering is enabled, but no keyword was provided. "
+                "Enter a keyword to run a filtered analysis."
+            )
+        elif article_count == 0:
+            summary = (
+                f"No matching articles were found for keyword '{keyword_clean}' "
+                f"across {candidate_articles_considered} candidate article pages. "
+                "Try a different keyword."
+            )
+        elif article_count < 2:
+            summary = (
+                f"Only {article_count} matching article was found for keyword '{keyword_clean}' "
+                f"from {candidate_articles_considered} candidate article pages. "
+                "That is too little signal for a useful keyword-focused summary; try a broader keyword."
+            )
+        else:
+            base_summary = build_summary(
+                article_texts=article_texts,
+                top_words=table_rows,
+                articles_scraped=article_count,
+                links_found=max(candidate_articles_considered, 1),
+            )
+            summary = (
+                f"Keyword focus: '{keyword_clean}'. "
+                f"Matched {article_count} of {candidate_articles_considered} candidate articles. "
+                f"{base_summary}"
+            )
+    else:
+        summary = build_summary(
+            article_texts=article_texts,
+            top_words=table_rows,
+            articles_scraped=article_count,
+            links_found=len(link_entries),
+        )
+
+    keyword_suggestions: list[str] = []
+    if keyword_mode_active and keyword_clean and article_count < 2:
+        keyword_suggestions = _suggest_alternative_keywords(
+            candidate_article_texts=candidate_article_texts,
+            keyword=keyword_clean,
+            max_suggestions=5,
+        )
 
     return {
         "links_found": len(link_entries),
-        "articles_attempted": min(len(link_entries), max_articles),
+        "articles_attempted": attempted_articles,
         "articles_scraped": article_count,
         "articles_failed": len(failed_urls),
         "scraped_preview": scraped_articles[:8],
         "top_words": table_rows,
         "summary": summary,
+        "keyword_filter_enabled": keyword_mode_active,
+        "keyword": keyword_clean,
+        "candidate_articles_considered": candidate_articles_considered,
+        "matching_articles": article_count if keyword_mode_active else 0,
+        "keyword_suggestions": keyword_suggestions,
     }

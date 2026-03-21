@@ -5,10 +5,20 @@ from __future__ import annotations
 from mcp_server.tools import analyze_homepage
 
 
-def run_pipeline(homepage_url: str, max_articles: int = 20) -> dict:
+def run_pipeline(
+    homepage_url: str,
+    max_articles: int = 20,
+    keyword: str = "",
+    keyword_filter_enabled: bool = False,
+) -> dict:
     """Run homepage -> article scrape -> word-frequency analysis."""
     try:
-        analysis = analyze_homepage(homepage_url=homepage_url, max_articles=max_articles)
+        analysis = analyze_homepage(
+            homepage_url=homepage_url,
+            max_articles=max_articles,
+            keyword=keyword,
+            keyword_filter_enabled=keyword_filter_enabled,
+        )
         return {"ok": "true", "error": "", **analysis}
     except ValueError as exc:
         return {
@@ -21,6 +31,8 @@ def run_pipeline(homepage_url: str, max_articles: int = 20) -> dict:
             "scraped_preview": [],
             "top_words": [],
             "summary": "",
+            "keyword_filter_enabled": keyword_filter_enabled,
+            "keyword": keyword.strip(),
         }
     except Exception as exc:
         return {
@@ -33,6 +45,8 @@ def run_pipeline(homepage_url: str, max_articles: int = 20) -> dict:
             "scraped_preview": [],
             "top_words": [],
             "summary": "",
+            "keyword_filter_enabled": keyword_filter_enabled,
+            "keyword": keyword.strip(),
         }
 
 
