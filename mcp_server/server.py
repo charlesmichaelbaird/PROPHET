@@ -1,42 +1,36 @@
-"""Minimal MCP-oriented server surface for Milestone 1."""
+"""Minimal server surface for zero-cost homepage analysis."""
 
 from __future__ import annotations
 
-from mcp_server.tools import clean_text, fetch_url, summarize_text
+from mcp_server.tools import analyze_homepage
 
 
-def run_pipeline(url: str) -> dict[str, str]:
-    """Run URL -> cleaned text -> summary with simple error reporting."""
+def run_pipeline(homepage_url: str, max_articles: int = 20) -> dict:
+    """Run homepage -> article scrape -> word-frequency analysis."""
     try:
-        html = fetch_url(url)
-        cleaned_text = clean_text(html)
-        summary = summarize_text(cleaned_text)
-        return {
-            "ok": "true",
-            "cleaned_text": cleaned_text,
-            "summary": summary,
-            "error": "",
-        }
+        analysis = analyze_homepage(homepage_url=homepage_url, max_articles=max_articles)
+        return {"ok": "true", "error": "", **analysis}
     except ValueError as exc:
         return {
             "ok": "false",
-            "cleaned_text": "",
-            "summary": "",
             "error": f"Invalid URL: {exc}",
+            "links_found": 0,
+            "articles_scraped": 0,
+            "scraped_preview": [],
+            "top_words": [],
         }
     except Exception as exc:
         return {
             "ok": "false",
-            "cleaned_text": "",
-            "summary": "",
             "error": f"Request failed: {exc}",
+            "links_found": 0,
+            "articles_scraped": 0,
+            "scraped_preview": [],
+            "top_words": [],
         }
 
 
-# MCP-style registry to show intended tool exposure.
 TOOLS = {
-    "fetch_url": fetch_url,
-    "clean_text": clean_text,
-    "summarize_text": summarize_text,
+    "analyze_homepage": analyze_homepage,
     "run_pipeline": run_pipeline,
 }
