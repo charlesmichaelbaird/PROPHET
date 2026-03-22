@@ -288,12 +288,72 @@ def _extract_top_phrases(article_texts: list[str], max_phrases: int = 3) -> list
     return recurring[:max_phrases]
 
 
+def _select_representative_line(article_texts: list[str], focus_words: list[str]) -> str:
+    """Pick a representative sentence using overlap with top focus words."""
+    candidate_sentences: list[str] = []
+    for article_text in article_texts:
+        candidate_sentences.extend(_split_sentences(article_text))
+
+    if not candidate_sentences:
+        return ""
+
+    scored: list[tuple[int, str]] = []
+    focus_set = set(focus_words)
+    for sentence in candidate_sentences:
+        sentence_tokens = set(_filter_tokens(sentence))
+        score = len(sentence_tokens.intersection(focus_set))
+        if 10 <= len(sentence.split()) <= 34:
+            scored.append((score, sentence))
+
+    if not scored:
+        return ""
+
+    scored.sort(key=lambda item: item[0], reverse=True)
+    return scored[0][1]
+
+
+def _select_supporting_article_url(
+    representative_line: str,
+    article_sources: list[dict[str, str]],
+) -> str:
+    """
+    Choose the most useful source article via token overlap with the representative line.
+
+    Deterministic tie-break: retain first seen article among equal scores.
+    """
+    if not representative_line:
+        return ""
+
+    line_tokens = set(_filter_tokens(representative_line))
+    if not line_tokens:
+        return ""
+
+    best_url = ""
+    best_score = 0
+    for source in article_sources:
+        url = source.get("url", "")
+        text = source.get("text", "")
+        if not url or not text:
+            continue
+
+        article_tokens = set(_filter_tokens(text))
+        if not article_tokens:
+            continue
+
+        overlap_score = len(line_tokens.intersection(article_tokens))
+        if overlap_score > best_score:
+            best_score = overlap_score
+            best_url = url
+
+    return best_url
+
+
 def build_summary(
     article_texts: list[str],
     top_words: list[dict[str, float]],
     articles_scraped: int,
     links_found: int,
-) -> str:
+) -> tuple[str, str]:
     """
     Build a short, heuristic narrative summary of the scraped corpus.
 
@@ -304,7 +364,8 @@ def build_summary(
     if not article_texts or not top_words:
         return (
             "Summary unavailable because there was not enough clean article text "
-            "to extract recurring terms."
+            "to extract recurring terms.",
+            "",
         )
 
     focus_words = [row["word"] for row in top_words[:5]]
@@ -316,22 +377,7 @@ def build_summary(
         joined_phrases = ", ".join(f'"{phrase}"' for phrase in phrase_list)
         phrase_text = f" Repeated phrase signals include {joined_phrases}."
 
-    candidate_sentences: list[str] = []
-    for article_text in article_texts:
-        candidate_sentences.extend(_split_sentences(article_text))
-
-    best_sentence = ""
-    if candidate_sentences:
-        scored = []
-        focus_set = set(focus_words)
-        for sentence in candidate_sentences:
-            sentence_tokens = set(_filter_tokens(sentence))
-            score = len(sentence_tokens.intersection(focus_set))
-            if 10 <= len(sentence.split()) <= 34:
-                scored.append((score, sentence))
-        if scored:
-            scored.sort(key=lambda item: item[0], reverse=True)
-            best_sentence = scored[0][1]
+    best_sentence = _select_representative_line(article_texts, focus_words)
 
     coverage_rate = (articles_scraped / links_found * 100) if links_found else 0.0
     summary = (
@@ -342,7 +388,7 @@ def build_summary(
     if best_sentence:
         summary += f" A representative line from the corpus is: {best_sentence}"
 
-    return summary
+    return summary, best_sentence
 
 
 def _match_keyword(page_title: str, article_text: str, keyword: str) -> bool:
@@ -395,6 +441,7 @@ def analyze_homepage(
     scraped_articles: list[dict[str, str]] = []
     article_texts: list[str] = []
     candidate_article_texts: list[str] = []
+    article_sources: list[dict[str, str]] = []
     failed_urls: list[str] = []
     attempted_articles = 0
     candidate_articles_considered = 0
@@ -425,6 +472,12 @@ def analyze_homepage(
             word_totals.update(token_counts)
             article_frequency.update(token_counts.keys())
             article_texts.append(article_text)
+            article_sources.append(
+                {
+                    "url": link["url"],
+                    "text": article_text,
+                }
+            )
             scraped_articles.append(
                 {
                     "url": link["url"],
@@ -451,6 +504,7 @@ def analyze_homepage(
         )
 
     if keyword_mode_active:
+        representative_line = ""
         if not keyword_clean:
             summary = (
                 "Keyword filtering is enabled, but no keyword was provided. "
@@ -469,7 +523,7 @@ def analyze_homepage(
                 "That is too little signal for a useful keyword-focused summary; try a broader keyword."
             )
         else:
-            base_summary = build_summary(
+            base_summary, representative_line = build_summary(
                 article_texts=article_texts,
                 top_words=table_rows,
                 articles_scraped=article_count,
@@ -481,12 +535,17 @@ def analyze_homepage(
                 f"{base_summary}"
             )
     else:
-        summary = build_summary(
+        summary, representative_line = build_summary(
             article_texts=article_texts,
             top_words=table_rows,
             articles_scraped=article_count,
             links_found=len(link_entries),
         )
+
+    representative_source_url = _select_supporting_article_url(
+        representative_line=representative_line,
+        article_sources=article_sources,
+    )
 
     keyword_suggestions: list[str] = []
     if keyword_mode_active and keyword_clean and article_count < 2:
@@ -504,6 +563,8 @@ def analyze_homepage(
         "scraped_preview": scraped_articles[:8],
         "top_words": table_rows,
         "summary": summary,
+        "representative_line": representative_line,
+        "representative_source_url": representative_source_url,
         "keyword_filter_enabled": keyword_mode_active,
         "keyword": keyword_clean,
         "candidate_articles_considered": candidate_articles_considered,

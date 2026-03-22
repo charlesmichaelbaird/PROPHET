@@ -31,6 +31,8 @@ def run_pipeline(
             "scraped_preview": [],
             "top_words": [],
             "summary": "",
+            "representative_line": "",
+            "representative_source_url": "",
             "keyword_filter_enabled": keyword_filter_enabled,
             "keyword": keyword.strip(),
         }
@@ -45,6 +47,8 @@ def run_pipeline(
             "scraped_preview": [],
             "top_words": [],
             "summary": "",
+            "representative_line": "",
+            "representative_source_url": "",
             "keyword_filter_enabled": keyword_filter_enabled,
             "keyword": keyword.strip(),
         }

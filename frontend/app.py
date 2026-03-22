@@ -198,4 +198,13 @@ with bottom_center:
         st.markdown('<div class="small">Summary unavailable due to analysis error.</div>', unsafe_allow_html=True)
     else:
         st.write(result.get("summary", "No summary available for this run."))
+        representative_line = result.get("representative_line", "")
+        if representative_line:
+            st.markdown("**Representative line**")
+            st.markdown(f"> {representative_line}")
+            source_url = result.get("representative_source_url", "")
+            if source_url:
+                st.markdown(f'<div class="small"><a href="{source_url}" target="_blank">View Article</a></div>', unsafe_allow_html=True)
+            else:
+                st.markdown('<div class="small">No clear source identified.</div>', unsafe_allow_html=True)
     st.markdown('</div>', unsafe_allow_html=True)
