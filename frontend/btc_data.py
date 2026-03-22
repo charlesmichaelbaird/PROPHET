@@ -8,7 +8,7 @@ from typing import Any
 import requests
 import streamlit as st
 
-BINANCE_DAILY_KLINES_URL = "https://api.binance.com/api/v3/klines"
+COINGECKO_MARKET_CHART_URL = "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart"
 COINBASE_SPOT_PRICE_URL = "https://api.coinbase.com/v2/prices/BTC-USD/spot"
 
 
@@ -28,20 +28,20 @@ def _moving_average(values: list[float], window: int) -> list[float | None]:
 
 @st.cache_data(ttl=60 * 60)
 def fetch_btc_history(limit: int = 365) -> list[dict[str, Any]]:
-    """Fetch daily BTC-USD-equivalent close prices from Binance BTCUSDT candles."""
+    """Fetch daily BTC-USD close prices from CoinGecko market chart data."""
     response = requests.get(
-        BINANCE_DAILY_KLINES_URL,
-        params={"symbol": "BTCUSDT", "interval": "1d", "limit": limit},
+        COINGECKO_MARKET_CHART_URL,
+        params={"vs_currency": "usd", "days": max(limit, 120), "interval": "daily"},
         timeout=15,
     )
     response.raise_for_status()
-    raw_candles = response.json()
+    raw_prices = response.json().get("prices", [])
 
     rows: list[dict[str, Any]] = []
     closes: list[float] = []
-    for candle in raw_candles:
-        close_ts = int(candle[6])
-        close_price = float(candle[4])
+    for point in raw_prices[-limit:]:
+        close_ts = int(point[0])
+        close_price = float(point[1])
         closes.append(close_price)
         rows.append(
             {

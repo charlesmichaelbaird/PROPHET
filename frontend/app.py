@@ -6,8 +6,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 import sys
 
+import altair as alt
 import streamlit as st
-from plotly import graph_objects as go
 
 # Ensure repository root is importable when running
 # `streamlit run frontend/app.py` from any working directory.
@@ -235,46 +235,43 @@ def render_prophet_dashboard() -> None:
         st.markdown('</div>', unsafe_allow_html=True)
 
 
-def _build_btc_chart(history_rows: list[dict], runtime_points: list[dict]) -> go.Figure:
-    price_x = [row["timestamp"] for row in history_rows] + [point["timestamp"] for point in runtime_points]
-    price_y = [row["close"] for row in history_rows] + [point["price"] for point in runtime_points]
-
-    fig = go.Figure()
-    fig.add_trace(
-        go.Scatter(
-            x=price_x,
-            y=price_y,
-            mode="lines",
-            name="BTC/USD Price",
-            line={"color": "#5bc0ff", "width": 2.6},
-        )
+def _build_btc_chart(history_rows: list[dict], runtime_points: list[dict]) -> alt.Chart:
+    price_rows = [
+        {"timestamp": row["timestamp"], "value": row["close"], "series": "BTC/USD Price"}
+        for row in history_rows
+    ]
+    price_rows.extend(
+        {"timestamp": point["timestamp"], "value": point["price"], "series": "BTC/USD Price"}
+        for point in runtime_points
     )
-    for field, name, color in (
-        ("ma_10", "10-day MA", "#8ef8ce"),
-        ("ma_30", "30-day MA", "#f8d66b"),
-        ("ma_100", "100-day MA", "#ff8ca8"),
-    ):
-        fig.add_trace(
-            go.Scatter(
-                x=[row["timestamp"] for row in history_rows],
-                y=[row[field] for row in history_rows],
-                mode="lines",
-                name=name,
-                line={"width": 1.8, "color": color},
-            )
-        )
 
-    fig.update_layout(
-        template="plotly_dark",
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(8, 15, 28, 0.72)",
-        margin={"l": 18, "r": 18, "t": 18, "b": 18},
-        legend={"orientation": "h", "yanchor": "bottom", "y": 1.01, "x": 0.01},
-        xaxis={"title": "", "gridcolor": "rgba(140, 177, 255, 0.12)"},
-        yaxis={"title": "Price (USD)", "gridcolor": "rgba(140, 177, 255, 0.12)", "tickprefix": "$"},
-        hovermode="x unified",
+    ma_rows = []
+    for field, label in (("ma_10", "10-day MA"), ("ma_30", "30-day MA"), ("ma_100", "100-day MA")):
+        for row in history_rows:
+            if row[field] is not None:
+                ma_rows.append({"timestamp": row["timestamp"], "value": row[field], "series": label})
+
+    all_rows = price_rows + ma_rows
+
+    base = alt.Chart(all_rows).encode(
+        x=alt.X("timestamp:T", title=""),
+        y=alt.Y("value:Q", title="Price (USD)", scale=alt.Scale(zero=False)),
+        color=alt.Color(
+            "series:N",
+            scale=alt.Scale(
+                domain=["BTC/USD Price", "10-day MA", "30-day MA", "100-day MA"],
+                range=["#5bc0ff", "#8ef8ce", "#f8d66b", "#ff8ca8"],
+            ),
+            legend=alt.Legend(orient="top", title=None),
+        ),
+        tooltip=[
+            alt.Tooltip("timestamp:T", title="Time (UTC)"),
+            alt.Tooltip("series:N", title="Series"),
+            alt.Tooltip("value:Q", title="Price", format=",.2f"),
+        ],
     )
-    return fig
+
+    return base.mark_line(strokeWidth=2.2).properties(height=470)
 
 
 @st.fragment(run_every=2)
@@ -305,7 +302,7 @@ def render_btc_live_view() -> None:
     headline_right.markdown(f'<div class="small">Last update (UTC): <strong>{updated_at:%Y-%m-%d %H:%M:%S}</strong></div>', unsafe_allow_html=True)
 
     fig = _build_btc_chart(history, st.session_state.btc_runtime_points)
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    st.altair_chart(fig, use_container_width=True)
     st.markdown("</div>", unsafe_allow_html=True)
 
 
