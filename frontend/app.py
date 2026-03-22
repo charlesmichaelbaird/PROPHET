@@ -7,6 +7,7 @@ from pathlib import Path
 import sys
 
 import streamlit as st
+from plotly import graph_objects as go
 
 # Ensure repository root is importable when running
 # `streamlit run frontend/app.py` from any working directory.
@@ -15,6 +16,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from mcp_server.server import run_pipeline
+from frontend.btc_data import fetch_btc_history, fetch_spot_btc_price
 
 st.set_page_config(
     page_title="PROPHET | Zero-Cost News Analyzer",
@@ -61,6 +63,19 @@ html, body, [data-testid="stAppViewContainer"], .stApp {
   border-radius: 10px; border: 1px solid rgba(138, 183, 255, 0.4); background: linear-gradient(130deg, #163769, #1f5f8d);
   color: #eaf5ff; font-weight: 700;
 }
+[data-testid="stHorizontalBlock"] [data-baseweb="tab-list"] {
+  gap: 0.5rem;
+}
+[data-baseweb="tab"] {
+  background: rgba(16, 26, 45, 0.78);
+  border: 1px solid rgba(111, 160, 255, 0.28);
+  border-radius: 12px;
+  color: #c8ddff;
+  padding: 0.45rem 0.8rem;
+}
+[aria-selected="true"][data-baseweb="tab"] {
+  background: linear-gradient(130deg, #14305a, #205985);
+}
 </style>
 """,
     unsafe_allow_html=True,
@@ -68,6 +83,8 @@ html, body, [data-testid="stAppViewContainer"], .stApp {
 
 if "analysis_result" not in st.session_state:
     st.session_state.analysis_result = None
+if "btc_runtime_points" not in st.session_state:
+    st.session_state.btc_runtime_points = []
 
 
 @st.fragment(run_every=1)
@@ -93,118 +110,206 @@ st.markdown(
 render_meta_chips()
 st.markdown("</section>", unsafe_allow_html=True)
 
-left, right = st.columns([1.05, 1.6], gap="large")
+view = st.radio(
+    "Dashboard View",
+    ["PROPHET Dashboard", "BTC/USD Monitor"],
+    horizontal=True,
+    label_visibility="collapsed",
+)
 
-with left:
-    st.markdown('<div class="panel">', unsafe_allow_html=True)
-    st.markdown('<div class="panel-title">Operator Console</div>', unsafe_allow_html=True)
-    st.caption("Provide a homepage (e.g., https://apnews.com), scrape article links, and analyze top words.")
+def render_prophet_dashboard() -> None:
+    left, right = st.columns([1.05, 1.6], gap="large")
 
-    homepage_url = st.text_input("Source Homepage URL", value="https://apnews.com")
-    max_articles = st.number_input("Max articles to scrape", min_value=5, max_value=50, value=20, step=5)
-    keyword_filter_enabled = st.checkbox("Enable keyword filtering", value=False)
-    keyword = st.text_input("Keyword (article-level match)", value="")
+    with left:
+        st.markdown('<div class="panel">', unsafe_allow_html=True)
+        st.markdown('<div class="panel-title">Operator Console</div>', unsafe_allow_html=True)
+        st.caption("Provide a homepage (e.g., https://apnews.com), scrape article links, and analyze top words.")
 
-    run_clicked = st.button("Run Zero-Cost Analysis", use_container_width=True)
-    clear_clicked = st.button("Reset Results", use_container_width=True)
+        homepage_url = st.text_input("Source Homepage URL", value="https://apnews.com")
+        max_articles = st.number_input("Max articles to scrape", min_value=5, max_value=50, value=20, step=5)
+        keyword_filter_enabled = st.checkbox("Enable keyword filtering", value=False)
+        keyword = st.text_input("Keyword (article-level match)", value="")
 
-    if clear_clicked:
-        st.session_state.analysis_result = None
+        run_clicked = st.button("Run Zero-Cost Analysis", use_container_width=True)
+        clear_clicked = st.button("Reset Results", use_container_width=True)
 
-    if run_clicked:
-        with st.spinner("Fetching homepage and scraping articles..."):
-            st.session_state.analysis_result = run_pipeline(
-                homepage_url.strip(),
-                int(max_articles),
-                keyword=keyword.strip(),
-                keyword_filter_enabled=keyword_filter_enabled,
-            )
+        if clear_clicked:
+            st.session_state.analysis_result = None
 
-    st.markdown('</div>', unsafe_allow_html=True)
+        if run_clicked:
+            with st.spinner("Fetching homepage and scraping articles..."):
+                st.session_state.analysis_result = run_pipeline(
+                    homepage_url.strip(),
+                    int(max_articles),
+                    keyword=keyword.strip(),
+                    keyword_filter_enabled=keyword_filter_enabled,
+                )
 
-with right:
-    st.markdown('<div class="panel">', unsafe_allow_html=True)
-    st.markdown('<div class="panel-title">Zero-Cost Analysis Results</div>', unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    with right:
+        st.markdown('<div class="panel">', unsafe_allow_html=True)
+        st.markdown('<div class="panel-title">Zero-Cost Analysis Results</div>', unsafe_allow_html=True)
+
+        result = st.session_state.analysis_result
+        if not result:
+            st.info("No analysis run yet.")
+        elif result["ok"] == "false":
+            st.error(result["error"])
+        else:
+            if result.get("keyword_filter_enabled"):
+                active_keyword = result.get("keyword", "")
+                st.success(f"Keyword filtering active: '{active_keyword}'")
+
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Links found", result["links_found"])
+            c2.metric("Articles attempted", result.get("articles_attempted", 0))
+            c3.metric("Articles scraped", result["articles_scraped"])
+            c4.metric("Articles failed", result.get("articles_failed", 0))
+
+            if result.get("keyword_filter_enabled"):
+                k1, k2, k3 = st.columns(3)
+                k1.metric("Keyword", result.get("keyword", ""))
+                k2.metric("Matching articles", result.get("matching_articles", 0))
+                k3.metric("Candidate articles considered", result.get("candidate_articles_considered", 0))
+
+            st.markdown("**Top 10 most common words**")
+            st.caption("Common stopwords, month/day/date terms, and source-noise words (e.g., photo/file/ap/news/said) are excluded.")
+            top_words = result.get("top_words", [])
+            if top_words:
+                rows = [
+                    {
+                        "word": row["word"],
+                        "total occurrences": row["total_occurrences"],
+                        "article count": row["article_count"],
+                        "article coverage %": row["article_coverage_pct"],
+                    }
+                    for row in top_words
+                ]
+                st.dataframe(rows, use_container_width=True, hide_index=True)
+            else:
+                st.warning("No word data available. Try increasing max articles or a different homepage.")
+
+            st.markdown("**Preview of scraped articles**")
+            preview = result.get("scraped_preview", [])
+            if preview:
+                for entry in preview:
+                    title = entry.get("title", entry["url"])
+                    word_count = entry.get("word_count")
+                    suffix = f" · {word_count} filtered words" if word_count else ""
+                    st.markdown(f"- [{title}]({entry['url']}){suffix}")
+            else:
+                st.markdown('<div class="small">No article previews available.</div>', unsafe_allow_html=True)
+
+            suggestions = result.get("keyword_suggestions", [])
+            if result.get("keyword_filter_enabled") and suggestions:
+                st.markdown("**Suggested alternative keywords**")
+                st.caption("Low keyword hit count detected. Try one of these broader terms.")
+                st.write(", ".join(suggestions))
+
+        st.markdown('</div>', unsafe_allow_html=True)
 
     result = st.session_state.analysis_result
-    if not result:
-        st.info("No analysis run yet.")
-    elif result["ok"] == "false":
-        st.error(result["error"])
-    else:
-        if result.get("keyword_filter_enabled"):
-            active_keyword = result.get("keyword", "")
-            st.success(f"Keyword filtering active: '{active_keyword}'")
-
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Links found", result["links_found"])
-        c2.metric("Articles attempted", result.get("articles_attempted", 0))
-        c3.metric("Articles scraped", result["articles_scraped"])
-        c4.metric("Articles failed", result.get("articles_failed", 0))
-
-        if result.get("keyword_filter_enabled"):
-            k1, k2, k3 = st.columns(3)
-            k1.metric("Keyword", result.get("keyword", ""))
-            k2.metric("Matching articles", result.get("matching_articles", 0))
-            k3.metric("Candidate articles considered", result.get("candidate_articles_considered", 0))
-
-        st.markdown("**Top 10 most common words**")
-        st.caption("Common stopwords, month/day/date terms, and source-noise words (e.g., photo/file/ap/news/said) are excluded.")
-        top_words = result.get("top_words", [])
-        if top_words:
-            rows = [
-                {
-                    "word": row["word"],
-                    "total occurrences": row["total_occurrences"],
-                    "article count": row["article_count"],
-                    "article coverage %": row["article_coverage_pct"],
-                }
-                for row in top_words
-            ]
-            st.dataframe(rows, use_container_width=True, hide_index=True)
+    bottom_left, bottom_center, bottom_right = st.columns([1, 1.5, 1], gap="large")
+    with bottom_center:
+        st.markdown('<div class="panel">', unsafe_allow_html=True)
+        st.markdown('<div class="panel-title">Prophet Summary</div>', unsafe_allow_html=True)
+        if not result:
+            st.markdown(
+                '<div class="small">Run analysis to generate a synthesized corpus summary.</div>',
+                unsafe_allow_html=True,
+            )
+        elif result["ok"] == "false":
+            st.markdown('<div class="small">Summary unavailable due to analysis error.</div>', unsafe_allow_html=True)
         else:
-            st.warning("No word data available. Try increasing max articles or a different homepage.")
+            st.write(result.get("summary", "No summary available for this run."))
+            representative_line = result.get("representative_line", "")
+            if representative_line:
+                st.markdown("**Representative line**")
+                st.markdown(f"> {representative_line}")
+                source_url = result.get("representative_source_url", "")
+                if source_url:
+                    st.markdown(f'<div class="small"><a href="{source_url}" target="_blank">View Article</a></div>', unsafe_allow_html=True)
+                else:
+                    st.markdown('<div class="small">No clear source identified.</div>', unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
 
-        st.markdown("**Preview of scraped articles**")
-        preview = result.get("scraped_preview", [])
-        if preview:
-            for entry in preview:
-                title = entry.get("title", entry["url"])
-                word_count = entry.get("word_count")
-                suffix = f" · {word_count} filtered words" if word_count else ""
-                st.markdown(f"- [{title}]({entry['url']}){suffix}")
-        else:
-            st.markdown('<div class="small">No article previews available.</div>', unsafe_allow_html=True)
 
-        suggestions = result.get("keyword_suggestions", [])
-        if result.get("keyword_filter_enabled") and suggestions:
-            st.markdown("**Suggested alternative keywords**")
-            st.caption("Low keyword hit count detected. Try one of these broader terms.")
-            st.write(", ".join(suggestions))
+def _build_btc_chart(history_rows: list[dict], runtime_points: list[dict]) -> go.Figure:
+    price_x = [row["timestamp"] for row in history_rows] + [point["timestamp"] for point in runtime_points]
+    price_y = [row["close"] for row in history_rows] + [point["price"] for point in runtime_points]
 
-    st.markdown('</div>', unsafe_allow_html=True)
-
-result = st.session_state.analysis_result
-bottom_left, bottom_center, bottom_right = st.columns([1, 1.5, 1], gap="large")
-with bottom_center:
-    st.markdown('<div class="panel">', unsafe_allow_html=True)
-    st.markdown('<div class="panel-title">Prophet Summary</div>', unsafe_allow_html=True)
-    if not result:
-        st.markdown(
-            '<div class="small">Run analysis to generate a synthesized corpus summary.</div>',
-            unsafe_allow_html=True,
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=price_x,
+            y=price_y,
+            mode="lines",
+            name="BTC/USD Price",
+            line={"color": "#5bc0ff", "width": 2.6},
         )
-    elif result["ok"] == "false":
-        st.markdown('<div class="small">Summary unavailable due to analysis error.</div>', unsafe_allow_html=True)
-    else:
-        st.write(result.get("summary", "No summary available for this run."))
-        representative_line = result.get("representative_line", "")
-        if representative_line:
-            st.markdown("**Representative line**")
-            st.markdown(f"> {representative_line}")
-            source_url = result.get("representative_source_url", "")
-            if source_url:
-                st.markdown(f'<div class="small"><a href="{source_url}" target="_blank">View Article</a></div>', unsafe_allow_html=True)
-            else:
-                st.markdown('<div class="small">No clear source identified.</div>', unsafe_allow_html=True)
-    st.markdown('</div>', unsafe_allow_html=True)
+    )
+    for field, name, color in (
+        ("ma_10", "10-day MA", "#8ef8ce"),
+        ("ma_30", "30-day MA", "#f8d66b"),
+        ("ma_100", "100-day MA", "#ff8ca8"),
+    ):
+        fig.add_trace(
+            go.Scatter(
+                x=[row["timestamp"] for row in history_rows],
+                y=[row[field] for row in history_rows],
+                mode="lines",
+                name=name,
+                line={"width": 1.8, "color": color},
+            )
+        )
+
+    fig.update_layout(
+        template="plotly_dark",
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(8, 15, 28, 0.72)",
+        margin={"l": 18, "r": 18, "t": 18, "b": 18},
+        legend={"orientation": "h", "yanchor": "bottom", "y": 1.01, "x": 0.01},
+        xaxis={"title": "", "gridcolor": "rgba(140, 177, 255, 0.12)"},
+        yaxis={"title": "Price (USD)", "gridcolor": "rgba(140, 177, 255, 0.12)", "tickprefix": "$"},
+        hovermode="x unified",
+    )
+    return fig
+
+
+@st.fragment(run_every=2)
+def render_btc_live_view() -> None:
+    st.markdown('<div class="panel">', unsafe_allow_html=True)
+    st.markdown('<div class="panel-title">BTC/USD Monitor</div>', unsafe_allow_html=True)
+
+    history = fetch_btc_history(limit=420)
+    if len(history) < 100:
+        st.error("Not enough historical BTC data to compute moving averages.")
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+
+    try:
+        spot_price, updated_at = fetch_spot_btc_price()
+    except Exception as exc:
+        st.warning(f"Live BTC quote unavailable right now: {exc}")
+        spot_price = history[-1]["close"]
+        updated_at = datetime.now(timezone.utc)
+
+    runtime_points = st.session_state.btc_runtime_points
+    runtime_points.append({"timestamp": updated_at, "price": spot_price})
+    st.session_state.btc_runtime_points = runtime_points[-720:]
+
+    headline_left, headline_mid, headline_right = st.columns([1.1, 1, 1.4])
+    headline_left.metric("Current BTC/USD", f"${spot_price:,.2f}")
+    headline_mid.metric("10-day MA", f"${history[-1]['ma_10']:,.2f}")
+    headline_right.markdown(f'<div class="small">Last update (UTC): <strong>{updated_at:%Y-%m-%d %H:%M:%S}</strong></div>', unsafe_allow_html=True)
+
+    fig = _build_btc_chart(history, st.session_state.btc_runtime_points)
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+if view == "PROPHET Dashboard":
+    render_prophet_dashboard()
+else:
+    render_btc_live_view()
