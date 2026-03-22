@@ -279,7 +279,13 @@ def render_btc_live_view() -> None:
     st.markdown('<div class="panel">', unsafe_allow_html=True)
     st.markdown('<div class="panel-title">BTC/USD Monitor</div>', unsafe_allow_html=True)
 
-    history = fetch_btc_history(limit=420)
+    try:
+        history = fetch_btc_history(limit=420)
+    except Exception as exc:
+        st.error(f"Historical BTC data unavailable right now: {exc}")
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+
     if len(history) < 100:
         st.error("Not enough historical BTC data to compute moving averages.")
         st.markdown("</div>", unsafe_allow_html=True)
