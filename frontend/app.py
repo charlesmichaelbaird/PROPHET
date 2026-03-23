@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import os
 from pathlib import Path
+import signal
+import subprocess
 import sys
+import time
 
 import pandas as pd
+import requests
 import streamlit as st
 
 # Ensure repository root is importable when running
@@ -15,7 +20,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from mcp_server.server import run_pipeline
+from mcp_server.server import run_ask_the_prophet, run_pipeline
 from frontend.btc_data import fetch_btc_history, fetch_spot_btc_price
 
 st.set_page_config(
@@ -85,6 +90,86 @@ if "analysis_result" not in st.session_state:
     st.session_state.analysis_result = None
 if "btc_runtime_points" not in st.session_state:
     st.session_state.btc_runtime_points = []
+if "ask_prophet_answer" not in st.session_state:
+    st.session_state.ask_prophet_answer = ""
+if "ask_prophet_error" not in st.session_state:
+    st.session_state.ask_prophet_error = ""
+if "ask_prophet_citations" not in st.session_state:
+    st.session_state.ask_prophet_citations = []
+if "ask_prophet_engine" not in st.session_state:
+    st.session_state.ask_prophet_engine = ""
+if "ollama_process" not in st.session_state:
+    st.session_state.ollama_process = None
+if "ollama_managed_by_ui" not in st.session_state:
+    st.session_state.ollama_managed_by_ui = False
+if "ollama_toggle_state" not in st.session_state:
+    st.session_state.ollama_toggle_state = False
+if "ollama_last_error" not in st.session_state:
+    st.session_state.ollama_last_error = ""
+if "ollama_host" not in st.session_state:
+    st.session_state.ollama_host = os.getenv("PROPHET_OLLAMA_HOST", "http://localhost:11434")
+
+
+def _is_ollama_api_alive(host: str) -> bool:
+    try:
+        response = requests.get(f"{host.rstrip('/')}/api/tags", timeout=1.5)
+        return response.status_code == 200
+    except Exception:
+        return False
+
+
+def _start_ollama_server(host: str) -> tuple[bool, str]:
+    if _is_ollama_api_alive(host):
+        st.session_state.ollama_managed_by_ui = False
+        st.session_state.ollama_last_error = ""
+        return True, "Ollama server already running (external process detected)."
+
+    try:
+        process = subprocess.Popen(  # noqa: S603
+            ["ollama", "serve"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+        )
+    except FileNotFoundError:
+        return False, "Could not find 'ollama' in PATH. Install Ollama and reopen the app."
+    except Exception as exc:
+        return False, f"Failed to start Ollama server: {exc}"
+
+    for _ in range(20):
+        if _is_ollama_api_alive(host):
+            st.session_state.ollama_process = process
+            st.session_state.ollama_managed_by_ui = True
+            st.session_state.ollama_last_error = ""
+            return True, "Ollama server started by UI control."
+        time.sleep(0.25)
+
+    return False, "Ollama process launched, but API did not become reachable at configured host."
+
+
+def _stop_ollama_server() -> tuple[bool, str]:
+    process = st.session_state.ollama_process
+    managed = st.session_state.ollama_managed_by_ui
+    if not managed or process is None:
+        return False, "Ollama appears to be externally managed. Stop it from your terminal if needed."
+
+    if process.poll() is not None:
+        st.session_state.ollama_process = None
+        st.session_state.ollama_managed_by_ui = False
+        return True, "Ollama process was already stopped."
+
+    try:
+        process.terminate()
+        process.wait(timeout=4)
+    except Exception:
+        try:
+            os.kill(process.pid, signal.SIGKILL)
+        except Exception as exc:
+            return False, f"Could not stop Ollama process: {exc}"
+
+    st.session_state.ollama_process = None
+    st.session_state.ollama_managed_by_ui = False
+    return True, "Ollama server stopped."
 
 
 @st.fragment(run_every=1)
@@ -93,7 +178,7 @@ def render_meta_chips() -> None:
     st.markdown(
         f'<span class="meta-chip">DATE • {now_utc:%Y-%m-%d}</span>'
         f'<span class="meta-chip">UTC • {now_utc:%H:%M:%S}</span>'
-        '<span class="meta-chip">MODE • ZERO-COST NO-LLM</span>',
+        '<span class="meta-chip">MODE • ZERO-COST + LOCAL LLM READY</span>',
         unsafe_allow_html=True,
     )
 
@@ -109,6 +194,46 @@ st.markdown(
 )
 render_meta_chips()
 st.markdown("</section>", unsafe_allow_html=True)
+
+top_left, top_right = st.columns([3.4, 1.2], gap="medium")
+with top_right:
+    st.markdown('<div class="panel">', unsafe_allow_html=True)
+    st.markdown('<div class="panel-title">Local Runtime Control</div>', unsafe_allow_html=True)
+    configured_host = st.session_state.ollama_host
+    alive_now = _is_ollama_api_alive(configured_host)
+
+    toggle_value = st.toggle(
+        "Ollama server",
+        value=st.session_state.ollama_toggle_state or alive_now,
+        help="Toggle on/off local Ollama runtime for Ask The Prophet.",
+    )
+
+    if toggle_value != st.session_state.ollama_toggle_state:
+        if toggle_value:
+            started, message = _start_ollama_server(configured_host)
+            st.session_state.ollama_last_error = "" if started else message
+            st.session_state.ollama_toggle_state = started or _is_ollama_api_alive(configured_host)
+            if started:
+                st.success(message)
+            else:
+                st.error(message)
+        else:
+            stopped, message = _stop_ollama_server()
+            if stopped:
+                st.session_state.ollama_toggle_state = False
+                st.success(message)
+            else:
+                st.session_state.ollama_toggle_state = _is_ollama_api_alive(configured_host)
+                st.warning(message)
+
+    alive_now = _is_ollama_api_alive(configured_host)
+    source = "UI-managed" if st.session_state.ollama_managed_by_ui else "External/unknown"
+    st.markdown(f'<div class="small">Host: <strong>{configured_host}</strong></div>', unsafe_allow_html=True)
+    if alive_now:
+        st.markdown(f'<div class="small">Status: <strong>Running</strong> ({source})</div>', unsafe_allow_html=True)
+    else:
+        st.markdown('<div class="small">Status: <strong>Stopped</strong></div>', unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
 
 view = st.radio(
     "Dashboard View",
@@ -149,9 +274,84 @@ def render_prophet_dashboard() -> None:
 
     with right:
         st.markdown('<div class="panel">', unsafe_allow_html=True)
-        st.markdown('<div class="panel-title">Zero-Cost Analysis Results</div>', unsafe_allow_html=True)
+        st.markdown('<div class="panel-title">Ask The Prophet</div>', unsafe_allow_html=True)
+        st.caption("Query your scraped corpus with local LLM (Ollama) when available, with extractive fallback when unavailable.")
+
+        ask_question = st.text_input("Ask a corpus-grounded question", value="", key="ask_prophet_question")
+        ask_clicked = st.button("Ask The Prophet", use_container_width=True)
 
         result = st.session_state.analysis_result
+        if ask_clicked:
+            if not result or result.get("ok") == "false":
+                st.session_state.ask_prophet_error = "Run a scrape analysis first so Prophet has evidence to search."
+                st.session_state.ask_prophet_answer = ""
+                st.session_state.ask_prophet_citations = []
+                st.session_state.ask_prophet_engine = ""
+            else:
+                ask_result = run_ask_the_prophet(
+                    question=ask_question,
+                    article_corpus=result.get("article_corpus", []),
+                )
+                st.session_state.ask_prophet_error = ask_result.get("error", "")
+                st.session_state.ask_prophet_answer = ask_result.get("answer", "")
+                st.session_state.ask_prophet_citations = ask_result.get("citations", [])
+                st.session_state.ask_prophet_engine = ask_result.get("engine", "")
+
+        if st.session_state.ask_prophet_error:
+            st.warning(st.session_state.ask_prophet_error)
+
+        if st.session_state.ask_prophet_answer:
+            st.markdown("**Answer**")
+            engine = st.session_state.ask_prophet_engine
+            if engine == "fallback":
+                st.markdown('<div class="small">Engine: Extractive fallback (no local model runtime detected)</div>', unsafe_allow_html=True)
+            elif engine == "ollama":
+                st.markdown('<div class="small">Engine: Local Ollama model</div>', unsafe_allow_html=True)
+            st.markdown(st.session_state.ask_prophet_answer)
+        else:
+            st.markdown('<div class="small">Answer will appear here after you ask a question.</div>', unsafe_allow_html=True)
+
+        if st.session_state.ask_prophet_citations:
+            st.markdown("**Supporting scraped sources**")
+            for citation in st.session_state.ask_prophet_citations:
+                st.markdown(f"- [{citation['title']}]({citation['url']})")
+
+        st.markdown(
+            '<div class="small">Grounding note: responses are constrained to scraped article excerpts and may decline when evidence is insufficient.</div>',
+            unsafe_allow_html=True,
+        )
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    result = st.session_state.analysis_result
+    bottom_left, bottom_center, bottom_right = st.columns([1, 1.5, 1], gap="large")
+    with bottom_center:
+        st.markdown('<div class="panel">', unsafe_allow_html=True)
+        st.markdown('<div class="panel-title">Prophet Summary</div>', unsafe_allow_html=True)
+        if not result:
+            st.markdown(
+                '<div class="small">Run analysis to generate a synthesized corpus summary.</div>',
+                unsafe_allow_html=True,
+            )
+        elif result["ok"] == "false":
+            st.markdown('<div class="small">Summary unavailable due to analysis error.</div>', unsafe_allow_html=True)
+        else:
+            st.write(result.get("summary", "No summary available for this run."))
+            representative_line = result.get("representative_line", "")
+            if representative_line:
+                st.markdown("**Representative line**")
+                st.markdown(f"> {representative_line}")
+                source_url = result.get("representative_source_url", "")
+                if source_url:
+                    st.markdown(f'<div class="small"><a href="{source_url}" target="_blank">View Article</a></div>', unsafe_allow_html=True)
+                else:
+                    st.markdown('<div class="small">No clear source identified.</div>', unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    bottom2_left, bottom2_center, bottom2_right = st.columns([1, 1.9, 1], gap="large")
+    with bottom2_center:
+        st.markdown('<div class="panel">', unsafe_allow_html=True)
+        st.markdown('<div class="panel-title">Zero-Cost Analysis Results</div>', unsafe_allow_html=True)
+
         if not result:
             st.info("No analysis run yet.")
         elif result["ok"] == "false":
@@ -207,31 +407,6 @@ def render_prophet_dashboard() -> None:
                 st.caption("Low keyword hit count detected. Try one of these broader terms.")
                 st.write(", ".join(suggestions))
 
-        st.markdown('</div>', unsafe_allow_html=True)
-
-    result = st.session_state.analysis_result
-    bottom_left, bottom_center, bottom_right = st.columns([1, 1.5, 1], gap="large")
-    with bottom_center:
-        st.markdown('<div class="panel">', unsafe_allow_html=True)
-        st.markdown('<div class="panel-title">Prophet Summary</div>', unsafe_allow_html=True)
-        if not result:
-            st.markdown(
-                '<div class="small">Run analysis to generate a synthesized corpus summary.</div>',
-                unsafe_allow_html=True,
-            )
-        elif result["ok"] == "false":
-            st.markdown('<div class="small">Summary unavailable due to analysis error.</div>', unsafe_allow_html=True)
-        else:
-            st.write(result.get("summary", "No summary available for this run."))
-            representative_line = result.get("representative_line", "")
-            if representative_line:
-                st.markdown("**Representative line**")
-                st.markdown(f"> {representative_line}")
-                source_url = result.get("representative_source_url", "")
-                if source_url:
-                    st.markdown(f'<div class="small"><a href="{source_url}" target="_blank">View Article</a></div>', unsafe_allow_html=True)
-                else:
-                    st.markdown('<div class="small">No clear source identified.</div>', unsafe_allow_html=True)
         st.markdown('</div>', unsafe_allow_html=True)
 
 
