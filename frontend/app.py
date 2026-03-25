@@ -59,6 +59,74 @@ html, body, [data-testid="stAppViewContainer"], .stApp {
   border: 1px solid var(--panel-border); border-radius: 16px; padding: 0.95rem 1rem;
   background: var(--panel); margin-bottom: 0.8rem;
 }
+.runtime-strip {
+  border: 1px solid rgba(132, 181, 255, 0.35);
+  border-radius: 14px;
+  padding: 0.7rem 0.6rem;
+  background: linear-gradient(180deg, rgba(10, 18, 33, 0.96), rgba(14, 27, 49, 0.9));
+  margin-bottom: 0.7rem;
+}
+.runtime-title {
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.16rem;
+  color: #b8ceff;
+  margin-bottom: 0.55rem;
+}
+.runtime-status-pill {
+  border: 1px solid rgba(138, 186, 255, 0.38);
+  border-radius: 999px;
+  padding: 0.33rem 0.52rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.08rem;
+  margin-bottom: 0.52rem;
+  text-transform: uppercase;
+}
+.runtime-status-pill.online {
+  background: linear-gradient(120deg, rgba(18, 87, 59, 0.65), rgba(22, 145, 98, 0.38));
+  color: #d8ffef;
+  box-shadow: inset 0 0 12px rgba(88, 244, 172, 0.18);
+}
+.runtime-status-pill.offline {
+  background: linear-gradient(120deg, rgba(84, 38, 38, 0.55), rgba(120, 44, 44, 0.35));
+  color: #ffe2e2;
+  box-shadow: inset 0 0 10px rgba(255, 122, 122, 0.15);
+}
+.runtime-led {
+  width: 0.42rem;
+  height: 0.42rem;
+  border-radius: 999px;
+  display: inline-block;
+}
+.runtime-status-pill.online .runtime-led {
+  background: #65ffbf;
+  box-shadow: 0 0 9px #65ffbf;
+}
+.runtime-status-pill.offline .runtime-led {
+  background: #ff8f8f;
+  box-shadow: 0 0 7px #ff8f8f;
+}
+.runtime-host {
+  font-size: 0.7rem;
+  color: #adc5ed;
+  word-break: break-word;
+  margin-bottom: 0.45rem;
+}
+[data-testid="stToggle"] label p {
+  font-size: 0.74rem;
+  letter-spacing: 0.03rem;
+  color: #d7e8ff;
+}
+[data-testid="stToggle"] > label {
+  border: 1px solid rgba(128, 177, 255, 0.32);
+  border-radius: 10px;
+  padding: 0.28rem 0.38rem;
+  background: rgba(12, 22, 40, 0.8);
+}
 .panel-title { font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.14rem; color: #b6cdff; margin-bottom: 0.55rem; }
 .small { color: var(--muted); font-size: 0.87rem; }
 [data-testid="stTextInput"] input, [data-testid="stNumberInput"] input {
@@ -182,28 +250,22 @@ def render_meta_chips() -> None:
         unsafe_allow_html=True,
     )
 
-st.markdown('<section class="hero">', unsafe_allow_html=True)
-st.markdown('<p class="brand">PROPHET</p>', unsafe_allow_html=True)
-st.markdown(
-    '<p class="subtitle">Predictive Reasoning of Probabilistic Hypotheses and Event Tracking</p>',
-    unsafe_allow_html=True,
-)
-st.markdown(
-    '<p class="small">Zero-cost / no-LLM homepage article analysis and word frequency dashboard.</p>',
-    unsafe_allow_html=True,
-)
-render_meta_chips()
-st.markdown("</section>", unsafe_allow_html=True)
-
-top_left, top_right = st.columns([3.4, 1.2], gap="medium")
-with top_right:
-    st.markdown('<div class="panel">', unsafe_allow_html=True)
-    st.markdown('<div class="panel-title">Local Runtime Control</div>', unsafe_allow_html=True)
+def render_runtime_control() -> None:
+    st.markdown('<div class="runtime-strip">', unsafe_allow_html=True)
+    st.markdown('<div class="runtime-title">Local Runtime Control</div>', unsafe_allow_html=True)
     configured_host = st.session_state.ollama_host
     alive_now = _is_ollama_api_alive(configured_host)
 
+    status_class = "online" if alive_now else "offline"
+    status_text = "Online" if alive_now else "Offline"
+    st.markdown(
+        f'<div class="runtime-status-pill {status_class}"><span>Ollama Runtime</span><span class="runtime-led"></span><span>{status_text}</span></div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(f'<div class="runtime-host">Host · {configured_host}</div>', unsafe_allow_html=True)
+
     toggle_value = st.toggle(
-        "Ollama server",
+        "Power Bus",
         value=st.session_state.ollama_toggle_state or alive_now,
         help="Toggle on/off local Ollama runtime for Ask The Prophet.",
     )
@@ -228,19 +290,35 @@ with top_right:
 
     alive_now = _is_ollama_api_alive(configured_host)
     source = "UI-managed" if st.session_state.ollama_managed_by_ui else "External/unknown"
-    st.markdown(f'<div class="small">Host: <strong>{configured_host}</strong></div>', unsafe_allow_html=True)
-    if alive_now:
-        st.markdown(f'<div class="small">Status: <strong>Running</strong> ({source})</div>', unsafe_allow_html=True)
-    else:
-        st.markdown('<div class="small">Status: <strong>Stopped</strong></div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="small">Source: <strong>{source}</strong></div>', unsafe_allow_html=True)
+    if not alive_now:
+        st.markdown('<div class="small">Runtime state: <strong>standby</strong></div>', unsafe_allow_html=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
-view = st.radio(
-    "Dashboard View",
-    ["PROPHET Dashboard", "BTC/USD Monitor"],
-    horizontal=True,
-    label_visibility="collapsed",
-)
+control_col, content_col = st.columns([0.58, 5.42], gap="medium")
+with control_col:
+    render_runtime_control()
+
+with content_col:
+    st.markdown('<section class="hero">', unsafe_allow_html=True)
+    st.markdown('<p class="brand">PROPHET</p>', unsafe_allow_html=True)
+    st.markdown(
+        '<p class="subtitle">Predictive Reasoning of Probabilistic Hypotheses and Event Tracking</p>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        '<p class="small">Zero-cost / no-LLM homepage article analysis and word frequency dashboard.</p>',
+        unsafe_allow_html=True,
+    )
+    render_meta_chips()
+    st.markdown("</section>", unsafe_allow_html=True)
+
+    view = st.radio(
+        "Dashboard View",
+        ["PROPHET Dashboard", "BTC/USD Monitor"],
+        horizontal=True,
+        label_visibility="collapsed",
+    )
 
 def render_prophet_dashboard() -> None:
     left, right = st.columns([1.05, 1.6], gap="large")
