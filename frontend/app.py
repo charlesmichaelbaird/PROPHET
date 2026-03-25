@@ -43,7 +43,7 @@ html, body, [data-testid="stAppViewContainer"], .stApp {
   background: radial-gradient(circle at 10% 10%, #162442 0%, #0a0f1d 35%, #060910 100%);
   color: var(--text);
 }
-.block-container { padding-top: 1.3rem; max-width: 1500px; }
+.block-container { padding-top: 1.3rem; max-width: 1500px; padding-left: 0.55rem; }
 .hero {
   border: 1px solid var(--panel-border); border-radius: 20px; padding: 1.2rem 1.4rem;
   background: linear-gradient(125deg, rgba(8, 13, 24, 0.95), rgba(20, 31, 56, 0.88)); margin-bottom: 1rem;
@@ -65,6 +65,7 @@ html, body, [data-testid="stAppViewContainer"], .stApp {
   padding: 0.65rem 0.6rem 0.75rem;
   background: linear-gradient(180deg, rgba(8, 16, 31, 0.95), rgba(13, 25, 46, 0.86));
   min-height: calc(100vh - 14rem);
+  margin-left: -0.35rem;
 }
 .control-strip .panel-title {
   font-size: 0.68rem;
@@ -110,16 +111,15 @@ html, body, [data-testid="stAppViewContainer"], .stApp {
 .runtime-state-offline {
   color: #ff7b9b;
 }
-[data-testid="stToggle"] {
-  padding: 0.22rem 0.3rem 0.12rem;
-  border: 1px solid rgba(103, 160, 255, 0.2);
+.control-strip [data-testid="stButton"] button {
   border-radius: 8px;
-  background: rgba(6, 15, 31, 0.5);
-}
-[data-testid="stToggle"] label p {
   font-size: 0.72rem;
-  letter-spacing: 0.04rem;
-  color: #bdd7ff !important;
+  letter-spacing: 0.05rem;
+  border: 1px solid rgba(118, 174, 255, 0.35);
+  width: 100%;
+}
+.control-strip [data-testid="stButton"] button[kind="secondary"] {
+  background: rgba(11, 21, 38, 0.86);
 }
 .panel-title { font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.14rem; color: #b6cdff; margin-bottom: 0.55rem; }
 .small { color: var(--muted); font-size: 0.87rem; }
@@ -257,7 +257,7 @@ st.markdown(
 render_meta_chips()
 st.markdown("</section>", unsafe_allow_html=True)
 
-left_strip, main_content = st.columns([0.62, 5.38], gap="medium")
+left_strip, main_content = st.columns([0.52, 5.48], gap="medium")
 with left_strip:
     st.markdown('<div class="control-strip">', unsafe_allow_html=True)
     st.markdown('<div class="panel-title">Local Runtime Control</div>', unsafe_allow_html=True)
@@ -266,6 +266,18 @@ with left_strip:
     runtime_state = "ONLINE" if alive_now else "OFFLINE"
     runtime_class = "runtime-state-online" if alive_now else "runtime-state-offline"
     runtime_source = "UI" if st.session_state.ollama_managed_by_ui else "EXT"
+    runtime_button_bg = "linear-gradient(135deg, #431724, #7a2337)" if not alive_now else "linear-gradient(135deg, #12362b, #1f785b)"
+    st.markdown(
+        f"""
+        <style>
+        .control-strip [data-testid="stButton"] button {{
+          background: {runtime_button_bg};
+          color: #e9f4ff;
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
     st.markdown(
         f"""
         <div class="runtime-card">
@@ -279,22 +291,16 @@ with left_strip:
         unsafe_allow_html=True,
     )
 
-    toggle_value = st.toggle(
-        "Runtime channel",
-        value=st.session_state.ollama_toggle_state or alive_now,
-        help="Toggle on/off local Ollama runtime for Ask The Prophet.",
+    runtime_button_label = "🟢 RUNNING" if alive_now else "🔴 OFFLINE"
+    runtime_button_clicked = st.button(
+        runtime_button_label,
+        key="ollama_runtime_button",
+        use_container_width=True,
+        help="Start/stop local Ollama runtime for Ask The Prophet.",
     )
 
-    if toggle_value != st.session_state.ollama_toggle_state:
-        if toggle_value:
-            started, message = _start_ollama_server(configured_host)
-            st.session_state.ollama_last_error = "" if started else message
-            st.session_state.ollama_toggle_state = started or _is_ollama_api_alive(configured_host)
-            if started:
-                st.success(message)
-            else:
-                st.error(message)
-        else:
+    if runtime_button_clicked:
+        if alive_now:
             stopped, message = _stop_ollama_server()
             if stopped:
                 st.session_state.ollama_toggle_state = False
@@ -302,6 +308,14 @@ with left_strip:
             else:
                 st.session_state.ollama_toggle_state = _is_ollama_api_alive(configured_host)
                 st.warning(message)
+        else:
+            started, message = _start_ollama_server(configured_host)
+            st.session_state.ollama_last_error = "" if started else message
+            st.session_state.ollama_toggle_state = started or _is_ollama_api_alive(configured_host)
+            if started:
+                st.success(message)
+            else:
+                st.error(message)
 
     alive_now = _is_ollama_api_alive(configured_host)
     source = "UI-managed" if st.session_state.ollama_managed_by_ui else "External/unknown"
