@@ -65,7 +65,7 @@ html, body, [data-testid="stAppViewContainer"], .stApp {
   padding: 0.65rem 0.6rem 0.75rem;
   background: linear-gradient(180deg, rgba(8, 16, 31, 0.95), rgba(13, 25, 46, 0.86));
   min-height: calc(100vh - 14rem);
-  margin-left: -0.35rem;
+  margin-left: -0.6rem;
 }
 .control-strip .panel-title {
   font-size: 0.68rem;
@@ -291,7 +291,7 @@ with left_strip:
         unsafe_allow_html=True,
     )
 
-    runtime_button_label = "🟢 RUNNING" if alive_now else "🔴 OFFLINE"
+    runtime_button_label = "running" if alive_now else "offline"
     runtime_button_clicked = st.button(
         runtime_button_label,
         key="ollama_runtime_button",
