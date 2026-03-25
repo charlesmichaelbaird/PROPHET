@@ -183,22 +183,21 @@ def render_meta_chips() -> None:
     )
 
 st.markdown('<section class="hero">', unsafe_allow_html=True)
-st.markdown('<p class="brand">PROPHET</p>', unsafe_allow_html=True)
-st.markdown(
-    '<p class="subtitle">Predictive Reasoning of Probabilistic Hypotheses and Event Tracking</p>',
-    unsafe_allow_html=True,
-)
-st.markdown(
-    '<p class="small">Zero-cost / no-LLM homepage article analysis and word frequency dashboard.</p>',
-    unsafe_allow_html=True,
-)
-render_meta_chips()
-st.markdown("</section>", unsafe_allow_html=True)
+hero_left, hero_right = st.columns([3.4, 1.2], gap="medium")
+with hero_left:
+    st.markdown('<p class="brand">PROPHET</p>', unsafe_allow_html=True)
+    st.markdown(
+        '<p class="subtitle">Predictive Reasoning of Probabilistic Hypotheses and Event Tracking</p>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        '<p class="small">Zero-cost / no-LLM homepage article analysis and word frequency dashboard.</p>',
+        unsafe_allow_html=True,
+    )
+    render_meta_chips()
 
-top_left, top_right = st.columns([3.4, 1.2], gap="medium")
-with top_right:
+with hero_right:
     st.markdown('<div class="panel">', unsafe_allow_html=True)
-    st.markdown('<div class="panel-title">Local Runtime Control</div>', unsafe_allow_html=True)
     configured_host = st.session_state.ollama_host
     alive_now = _is_ollama_api_alive(configured_host)
 
@@ -234,6 +233,7 @@ with top_right:
     else:
         st.markdown('<div class="small">Status: <strong>Stopped</strong></div>', unsafe_allow_html=True)
     st.markdown('</div>', unsafe_allow_html=True)
+st.markdown("</section>", unsafe_allow_html=True)
 
 view = st.radio(
     "Dashboard View",
