@@ -259,8 +259,6 @@ with left_strip:
     st.markdown('<div class="panel-title">Local Runtime Control</div>', unsafe_allow_html=True)
     configured_host = st.session_state.ollama_host
     alive_now = _is_ollama_api_alive(configured_host)
-    runtime_state = "ONLINE" if alive_now else "OFFLINE"
-    runtime_class = "runtime-state-online" if alive_now else "runtime-state-offline"
     runtime_source = "UI" if st.session_state.ollama_managed_by_ui else "EXT"
     runtime_button_bg = "linear-gradient(135deg, #431724, #7a2337)" if not alive_now else "linear-gradient(135deg, #12362b, #1f785b)"
     st.markdown(
@@ -274,33 +272,23 @@ with left_strip:
         """,
         unsafe_allow_html=True,
     )
-    st.markdown(
-        f"""
-        <div class="runtime-card">
-          <div class="runtime-card-head">Ollama Runtime</div>
-          <div class="runtime-status">
-            <span><span class="runtime-dot {runtime_class}"></span>{runtime_state}</span>
-            <span>{runtime_source}</span>
-          </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    runtime_button_label = "running" if alive_now else "offline"
+    st.markdown('<div class="runtime-card">', unsafe_allow_html=True)
+    st.markdown('<div class="runtime-card-head">Ollama Runtime</div>', unsafe_allow_html=True)
+    runtime_button_label = "online" if alive_now else "offline"
     runtime_button_clicked = st.button(
         runtime_button_label,
         key="ollama_runtime_button",
         use_container_width=True,
         help="Start/stop local Ollama runtime for Ask The Prophet.",
     )
+    st.markdown(f'<div class="small">Mode · <strong>{runtime_source}</strong></div>', unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
 
     if runtime_button_clicked:
         if alive_now:
             stopped, message = _stop_ollama_server()
             if stopped:
                 st.session_state.ollama_toggle_state = False
-                st.success(message)
             else:
                 st.session_state.ollama_toggle_state = _is_ollama_api_alive(configured_host)
                 st.warning(message)
