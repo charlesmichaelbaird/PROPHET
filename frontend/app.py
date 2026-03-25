@@ -59,6 +59,44 @@ html, body, [data-testid="stAppViewContainer"], .stApp {
   border: 1px solid var(--panel-border); border-radius: 16px; padding: 0.95rem 1rem;
   background: var(--panel); margin-bottom: 0.8rem;
 }
+.control-strip {
+  min-height: calc(100vh - 220px);
+  border: 1px solid rgba(130, 176, 255, 0.3);
+  border-radius: 16px;
+  padding: 0.85rem 0.65rem;
+  background: linear-gradient(180deg, rgba(10, 18, 34, 0.96), rgba(8, 14, 26, 0.92));
+}
+.control-strip .panel-title {
+  font-size: 0.72rem;
+  letter-spacing: 0.12rem;
+  margin-bottom: 0.8rem;
+}
+.runtime-badge {
+  border: 1px solid rgba(135, 184, 255, 0.4);
+  border-radius: 12px;
+  padding: 0.45rem 0.55rem;
+  background: rgba(27, 44, 74, 0.45);
+  margin-bottom: 0.6rem;
+}
+.runtime-led {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  display: inline-block;
+  margin-right: 0.45rem;
+}
+.runtime-led.online {
+  background: #79ffc3;
+  box-shadow: 0 0 12px rgba(121, 255, 195, 0.8);
+}
+.runtime-led.offline {
+  background: #5a6f91;
+}
+[data-testid="stRadio"] label p {
+  font-size: 0.76rem !important;
+  letter-spacing: 0.05rem;
+  color: #bfd4ff !important;
+}
 .panel-title { font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.14rem; color: #b6cdff; margin-bottom: 0.55rem; }
 .small { color: var(--muted); font-size: 0.87rem; }
 [data-testid="stTextInput"] input, [data-testid="stNumberInput"] input {
@@ -195,18 +233,22 @@ st.markdown(
 render_meta_chips()
 st.markdown("</section>", unsafe_allow_html=True)
 
-top_left, top_right = st.columns([3.4, 1.2], gap="medium")
-with top_right:
-    st.markdown('<div class="panel">', unsafe_allow_html=True)
+layout_left, layout_main = st.columns([0.65, 8.35], gap="small")
+with layout_left:
+    st.markdown('<div class="control-strip">', unsafe_allow_html=True)
     st.markdown('<div class="panel-title">Local Runtime Control</div>', unsafe_allow_html=True)
     configured_host = st.session_state.ollama_host
     alive_now = _is_ollama_api_alive(configured_host)
 
-    toggle_value = st.toggle(
-        "Ollama server",
-        value=st.session_state.ollama_toggle_state or alive_now,
-        help="Toggle on/off local Ollama runtime for Ask The Prophet.",
+    selected_mode = st.radio(
+        "Ollama Runtime",
+        ["OFFLINE", "ONLINE"],
+        index=1 if (st.session_state.ollama_toggle_state or alive_now) else 0,
+        horizontal=True,
+        label_visibility="collapsed",
+        help="Set local Ollama runtime state for Ask The Prophet.",
     )
+    toggle_value = selected_mode == "ONLINE"
 
     if toggle_value != st.session_state.ollama_toggle_state:
         if toggle_value:
@@ -228,19 +270,19 @@ with top_right:
 
     alive_now = _is_ollama_api_alive(configured_host)
     source = "UI-managed" if st.session_state.ollama_managed_by_ui else "External/unknown"
-    st.markdown(f'<div class="small">Host: <strong>{configured_host}</strong></div>', unsafe_allow_html=True)
+    runtime_led_class = "online" if alive_now else "offline"
+    runtime_text = "ONLINE" if alive_now else "OFFLINE"
+    st.markdown(
+        f'<div class="runtime-badge"><span class="runtime-led {runtime_led_class}"></span>'
+        f'<span class="small"><strong>OLLAMA {runtime_text}</strong></span></div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(f'<div class="small">Host<br><strong>{configured_host}</strong></div>', unsafe_allow_html=True)
     if alive_now:
-        st.markdown(f'<div class="small">Status: <strong>Running</strong> ({source})</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="small">Status<br><strong>Running</strong><br>({source})</div>', unsafe_allow_html=True)
     else:
-        st.markdown('<div class="small">Status: <strong>Stopped</strong></div>', unsafe_allow_html=True)
+        st.markdown('<div class="small">Status<br><strong>Stopped</strong></div>', unsafe_allow_html=True)
     st.markdown('</div>', unsafe_allow_html=True)
-
-view = st.radio(
-    "Dashboard View",
-    ["PROPHET Dashboard", "BTC/USD Monitor"],
-    horizontal=True,
-    label_visibility="collapsed",
-)
 
 def render_prophet_dashboard() -> None:
     left, right = st.columns([1.05, 1.6], gap="large")
@@ -482,7 +524,14 @@ def render_btc_live_view() -> None:
     st.markdown("</div>", unsafe_allow_html=True)
 
 
-if view == "PROPHET Dashboard":
-    render_prophet_dashboard()
-else:
-    render_btc_live_view()
+with layout_main:
+    view = st.radio(
+        "Dashboard View",
+        ["PROPHET Dashboard", "BTC/USD Monitor"],
+        horizontal=True,
+        label_visibility="collapsed",
+    )
+    if view == "PROPHET Dashboard":
+        render_prophet_dashboard()
+    else:
+        render_btc_live_view()
