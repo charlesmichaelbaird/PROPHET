@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from mcp_server.tools import analyze_homepage
+from mcp_server.tools import analyze_homepage, ask_the_prophet
 
 
 def run_pipeline(
@@ -35,6 +35,7 @@ def run_pipeline(
             "representative_source_url": "",
             "keyword_filter_enabled": keyword_filter_enabled,
             "keyword": keyword.strip(),
+            "article_corpus": [],
         }
     except Exception as exc:
         return {
@@ -51,10 +52,26 @@ def run_pipeline(
             "representative_source_url": "",
             "keyword_filter_enabled": keyword_filter_enabled,
             "keyword": keyword.strip(),
+            "article_corpus": [],
+        }
+
+
+def run_ask_the_prophet(question: str, article_corpus: list[dict[str, str]]) -> dict:
+    """Run grounded Q&A over the scraped article corpus."""
+    try:
+        return ask_the_prophet(question=question, article_corpus=article_corpus)
+    except Exception as exc:
+        return {
+            "ok": "false",
+            "error": f"Ask The Prophet failed: {exc}",
+            "answer": "",
+            "citations": [],
+            "engine": "",
         }
 
 
 TOOLS = {
     "analyze_homepage": analyze_homepage,
     "run_pipeline": run_pipeline,
+    "run_ask_the_prophet": run_ask_the_prophet,
 }

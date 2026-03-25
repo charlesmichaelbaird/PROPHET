@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from collections import Counter
 from html import unescape
@@ -570,4 +571,220 @@ def analyze_homepage(
         "candidate_articles_considered": candidate_articles_considered,
         "matching_articles": article_count if keyword_mode_active else 0,
         "keyword_suggestions": keyword_suggestions,
+        "article_corpus": [
+            {
+                "url": article["url"],
+                "title": article["title"],
+                "text": source["text"],
+            }
+            for article, source in zip(scraped_articles, article_sources)
+        ],
+    }
+
+
+def _chunk_article_text(
+    text: str,
+    max_chunk_words: int = 180,
+    overlap_words: int = 35,
+) -> list[str]:
+    """Split article text into overlapping chunks for retrieval."""
+    words = text.split()
+    if not words:
+        return []
+
+    if len(words) <= max_chunk_words:
+        return [" ".join(words)]
+
+    chunks: list[str] = []
+    step = max(max_chunk_words - overlap_words, 1)
+    start = 0
+    while start < len(words):
+        end = min(start + max_chunk_words, len(words))
+        chunk = " ".join(words[start:end]).strip()
+        if chunk:
+            chunks.append(chunk)
+        if end >= len(words):
+            break
+        start += step
+    return chunks
+
+
+def _retrieve_relevant_chunks(
+    question: str,
+    article_corpus: list[dict[str, str]],
+    max_chunks: int = 5,
+) -> list[dict[str, str | int]]:
+    """Rank chunks via simple token-overlap retrieval."""
+    question_tokens = set(_filter_tokens(question))
+    if not question_tokens:
+        return []
+
+    scored_chunks: list[dict[str, str | int]] = []
+    for article in article_corpus:
+        text = article.get("text", "")
+        if not text:
+            continue
+        for chunk in _chunk_article_text(text):
+            chunk_tokens = set(_filter_tokens(chunk))
+            if not chunk_tokens:
+                continue
+            overlap = len(question_tokens.intersection(chunk_tokens))
+            if overlap <= 0:
+                continue
+            scored_chunks.append(
+                {
+                    "score": overlap,
+                    "chunk": chunk,
+                    "url": article.get("url", ""),
+                    "title": article.get("title", article.get("url", "")),
+                }
+            )
+
+    scored_chunks.sort(key=lambda item: int(item["score"]), reverse=True)
+    return scored_chunks[:max_chunks]
+
+
+def _call_ollama(question: str, evidence_chunks: list[dict[str, str | int]]) -> str:
+    """Query a local Ollama model with retrieved evidence chunks."""
+    ollama_host = os.getenv("PROPHET_OLLAMA_HOST", "http://localhost:11434").rstrip("/")
+    ollama_model = os.getenv("PROPHET_OLLAMA_MODEL", "llama3.1")
+    timeout_seconds = float(os.getenv("PROPHET_OLLAMA_TIMEOUT_SECONDS", "60"))
+
+    context_blocks = []
+    for idx, entry in enumerate(evidence_chunks, start=1):
+        title = entry.get("title", "")
+        url = entry.get("url", "")
+        chunk = entry.get("chunk", "")
+        context_blocks.append(f"[Source {idx}] {title}\nURL: {url}\n{chunk}")
+    context = "\n\n".join(context_blocks)
+
+    system_prompt = (
+        "You are Ask The Prophet. Answer ONLY from provided scraped article excerpts. "
+        "If the excerpts do not contain enough evidence, respond exactly: "
+        "'Not enough relevant scraped data to answer this question yet.'"
+    )
+    user_prompt = (
+        f"Question: {question}\n\n"
+        f"Scraped Evidence:\n{context}\n\n"
+        "Provide a concise grounded answer and avoid unsupported claims."
+    )
+
+    response = requests.post(
+        f"{ollama_host}/api/chat",
+        json={
+            "model": ollama_model,
+            "stream": False,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        },
+        timeout=timeout_seconds,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    message = payload.get("message", {})
+    content = str(message.get("content", "")).strip()
+    return content
+
+
+def _build_extractive_fallback_answer(evidence_chunks: list[dict[str, str | int]]) -> str:
+    """Build a deterministic, citation-grounded fallback answer without an LLM."""
+    if not evidence_chunks:
+        return "Not enough relevant scraped data to answer this question yet."
+
+    selected_snippets: list[str] = []
+    for idx, chunk in enumerate(evidence_chunks[:3], start=1):
+        raw_chunk = str(chunk.get("chunk", "")).strip()
+        if not raw_chunk:
+            continue
+        sentences = _split_sentences(raw_chunk)
+        snippet = sentences[0] if sentences else raw_chunk
+        selected_snippets.append(f"[Source {idx}] {snippet}")
+
+    if not selected_snippets:
+        return "Not enough relevant scraped data to answer this question yet."
+
+    return (
+        "Local LLM runtime unavailable, so here is an extractive answer from the most relevant scraped passages:\n\n"
+        + "\n\n".join(selected_snippets)
+    )
+
+
+def ask_the_prophet(
+    question: str,
+    article_corpus: list[dict[str, str]],
+) -> dict:
+    """Answer a question using scraped-article retrieval and a local LLM."""
+    cleaned_question = question.strip()
+    if not cleaned_question:
+        return {
+            "ok": "false",
+            "error": "Please enter a question first.",
+            "answer": "",
+            "citations": [],
+        }
+
+    if not article_corpus:
+        return {
+            "ok": "true",
+            "error": "",
+            "answer": "Not enough relevant scraped data to answer this question yet. Try scraping a source first.",
+            "citations": [],
+        }
+
+    relevant_chunks = _retrieve_relevant_chunks(cleaned_question, article_corpus, max_chunks=5)
+    if len(relevant_chunks) < 2:
+        return {
+            "ok": "true",
+            "error": "",
+            "answer": "Not enough relevant scraped data to answer this question yet.",
+            "citations": [],
+        }
+
+    try:
+        answer = _call_ollama(cleaned_question, relevant_chunks)
+    except Exception as exc:
+        fallback_answer = _build_extractive_fallback_answer(relevant_chunks)
+        fallback_citations: list[dict[str, str]] = []
+        seen_fallback_urls: set[str] = set()
+        for chunk in relevant_chunks:
+            url = str(chunk.get("url", ""))
+            if not url or url in seen_fallback_urls:
+                continue
+            fallback_citations.append({"title": str(chunk.get("title", url)), "url": url})
+            seen_fallback_urls.add(url)
+            if len(fallback_citations) >= 3:
+                break
+        return {
+            "ok": "true",
+            "error": (
+                "Local model call failed. Showing extractive fallback from scraped data. "
+                "Install/run Ollama and configure PROPHET_OLLAMA_HOST / PROPHET_OLLAMA_MODEL for generative answers."
+            ),
+            "answer": f"{fallback_answer}\n\n(Technical detail: {exc})",
+            "citations": fallback_citations,
+            "engine": "fallback",
+        }
+
+    if not answer:
+        answer = "Not enough relevant scraped data to answer this question yet."
+
+    citations: list[dict[str, str]] = []
+    seen_urls: set[str] = set()
+    for chunk in relevant_chunks:
+        url = str(chunk.get("url", ""))
+        if not url or url in seen_urls:
+            continue
+        citations.append({"title": str(chunk.get("title", url)), "url": url})
+        seen_urls.add(url)
+        if len(citations) >= 3:
+            break
+
+    return {
+        "ok": "true",
+        "error": "",
+        "answer": answer,
+        "citations": citations,
+        "engine": "ollama",
     }
