@@ -29,7 +29,14 @@ PROPHET/
 │   └── app.py              # Streamlit UI entry point
 ├── mcp_server/
 │   ├── server.py           # run_pipeline wrapper + TOOLS dict
-│   └── tools.py            # scraping/parsing/analysis implementation
+│   ├── tools.py            # scraping/parsing/analysis implementation
+│   └── storage.py          # local flat-file persistence helpers
+├── data/                   # local scrape data (gitignored contents)
+│   ├── raw/                # raw article HTML by source/date
+│   ├── processed/          # cleaned text + metadata by source/date
+│   ├── index/              # per-run summary records
+│   ├── cache/              # reserved for future local caches
+│   └── exports/            # reserved for future export files
 ├── main.py                 # PyCharm sample script; not the app runtime
 └── requirements.txt        # Python dependencies
 ```
@@ -195,8 +202,24 @@ Click **Reset Results** to clear session output.
 - Link extraction is heuristic-based and may miss or include irrelevant links depending on site structure.
 - Article parsing relies on `<p>` tags and may fail on heavily scripted/dynamic websites.
 - Failures while scraping individual articles are silently skipped.
-- No persistent storage/database; results are session-only.
+- Scraped results are persisted locally to `data/` as flat files (gitignored contents).
 - No automated test suite present in repository.
+
+---
+
+## 10) Local Data Persistence
+
+Scraped data is now saved to a repo-local `data/` folder during each run.
+
+- `data/raw/{source}/{YYYY-MM-DD}/`
+  - Raw article HTML files (`*.html`)
+- `data/processed/{source}/{YYYY-MM-DD}/{article_id}/`
+  - `metadata.json` (source/homepage URL, article URL, title, scrape timestamp, file paths, article metadata)
+  - `clean_text.txt` (cleaned extracted article text)
+- `data/index/{source}/{YYYY-MM-DD}/`
+  - run-level summary JSON records for each scrape execution
+
+The `data/` contents are intentionally gitignored for local development use.
 
 ---
 
@@ -289,4 +312,3 @@ Current project requires **no env vars**. If you set API keys, they are ignored 
 - **Dependency file identified:** `requirements.txt`
 - **OpenAI integration status:** not implemented / not used
 - **MCP server status:** helpers are runnable as imported Python functions; standalone MCP server process is not currently implemented
-

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import os
 import re
 from collections import Counter
@@ -10,6 +11,8 @@ from html.parser import HTMLParser
 from urllib.parse import urljoin, urlparse, urlunparse
 
 import requests
+
+from mcp_server.storage import ensure_data_directories, write_article_files, write_run_index
 
 _BASE_STOPWORDS = {
     "a", "about", "above", "after", "again", "against", "all", "am", "an", "and", "any", "are", "as",
@@ -431,6 +434,8 @@ def analyze_homepage(
     keyword_filter_enabled: bool = False,
 ) -> dict:
     """Scrape homepage article links and compute top-word metrics without LLMs."""
+    scrape_started_at = datetime.now(timezone.utc)
+    ensure_data_directories()
     homepage_html = fetch_url(homepage_url)
     link_entries = extract_article_links(homepage_html, homepage_url, max_links=max_articles * 3)
 
@@ -444,6 +449,7 @@ def analyze_homepage(
     candidate_article_texts: list[str] = []
     article_sources: list[dict[str, str]] = []
     failed_urls: list[str] = []
+    persisted_articles: list[dict[str, str]] = []
     attempted_articles = 0
     candidate_articles_considered = 0
 
@@ -479,11 +485,29 @@ def analyze_homepage(
                     "text": article_text,
                 }
             )
-            scraped_articles.append(
+            preview_entry = (
                 {
                     "url": link["url"],
                     "title": page_title or link["title"] or link["url"],
                     "word_count": len(tokens),
+                }
+            )
+            scraped_articles.append(preview_entry)
+            persisted_paths = write_article_files(
+                homepage_url=homepage_url,
+                source_homepage_url=homepage_url,
+                article_url=link["url"],
+                title=preview_entry["title"],
+                scrape_timestamp=datetime.now(timezone.utc),
+                clean_text=article_text,
+                article_html=article_html,
+                article_metadata=preview_entry,
+            )
+            persisted_articles.append(
+                {
+                    "url": preview_entry["url"],
+                    "title": preview_entry["title"],
+                    **persisted_paths,
                 }
             )
         except Exception:
@@ -556,7 +580,7 @@ def analyze_homepage(
             max_suggestions=5,
         )
 
-    return {
+    result = {
         "links_found": len(link_entries),
         "articles_attempted": attempted_articles,
         "articles_scraped": article_count,
@@ -579,7 +603,28 @@ def analyze_homepage(
             }
             for article, source in zip(scraped_articles, article_sources)
         ],
+        "persisted_articles": persisted_articles[:8],
     }
+
+    run_index_path = write_run_index(
+        homepage_url=homepage_url,
+        scrape_timestamp=scrape_started_at,
+        summary_payload={
+            "homepage_url": homepage_url,
+            "scrape_started_at": scrape_started_at.isoformat(),
+            "links_found": result["links_found"],
+            "articles_attempted": result["articles_attempted"],
+            "articles_scraped": result["articles_scraped"],
+            "articles_failed": result["articles_failed"],
+            "keyword_filter_enabled": result["keyword_filter_enabled"],
+            "keyword": result["keyword"],
+            "summary": result["summary"],
+            "top_words": result["top_words"],
+            "persisted_articles": persisted_articles,
+        },
+    )
+    result["run_index_path"] = run_index_path
+    return result
 
 
 def _chunk_article_text(

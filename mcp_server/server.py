@@ -36,6 +36,8 @@ def run_pipeline(
             "keyword_filter_enabled": keyword_filter_enabled,
             "keyword": keyword.strip(),
             "article_corpus": [],
+            "persisted_articles": [],
+            "run_index_path": "",
         }
     except Exception as exc:
         return {
@@ -53,6 +55,8 @@ def run_pipeline(
             "keyword_filter_enabled": keyword_filter_enabled,
             "keyword": keyword.strip(),
             "article_corpus": [],
+            "persisted_articles": [],
+            "run_index_path": "",
         }
 
 
