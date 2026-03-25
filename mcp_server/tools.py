@@ -252,7 +252,28 @@ def extract_article_text(article_html: str) -> str:
     parser.close()
 
     clean = re.sub(r"\s+", " ", unescape(parser.get_text())).strip()
-    return clean
+    return _strip_ap_photo_captions(clean)
+
+
+def _strip_ap_photo_captions(text: str) -> str:
+    """
+    Remove AP photo caption lead-ins from scraped article text.
+
+    Example caption marker pattern:
+    `(AP Photo/John Doe)` or `(AP Photo/John Doe, File)`.
+
+    If present, keep only the text that appears after the closing parenthesis.
+    """
+    cleaned = text
+    marker_pattern = re.compile(r"\(AP Photo/[^)]*\)", re.IGNORECASE)
+
+    while True:
+        match = marker_pattern.search(cleaned)
+        if not match:
+            break
+        cleaned = cleaned[match.end():].lstrip(" -:;,\n\t")
+
+    return re.sub(r"\s+", " ", cleaned).strip()
 
 
 def extract_document_title(article_html: str) -> str:
