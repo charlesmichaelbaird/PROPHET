@@ -60,11 +60,7 @@ html, body, [data-testid="stAppViewContainer"], .stApp {
   background: var(--panel); margin-bottom: 0.8rem;
 }
 .control-strip {
-  border: 1px solid rgba(119, 170, 255, 0.28);
-  border-radius: 14px;
-  padding: 0.65rem 0.6rem 0.75rem;
-  background: linear-gradient(180deg, rgba(8, 16, 31, 0.95), rgba(13, 25, 46, 0.86));
-  min-height: calc(100vh - 14rem);
+  padding: 0.1rem 0.1rem 0.25rem;
   margin-left: -0.6rem;
 }
 .control-strip .panel-title {
@@ -263,6 +259,9 @@ with left_strip:
     st.markdown('<div class="panel-title">Local Runtime Control</div>', unsafe_allow_html=True)
     configured_host = st.session_state.ollama_host
     alive_now = _is_ollama_api_alive(configured_host)
+    runtime_state = "ONLINE" if alive_now else "OFFLINE"
+    runtime_class = "runtime-state-online" if alive_now else "runtime-state-offline"
+    runtime_source = "UI" if st.session_state.ollama_managed_by_ui else "EXT"
     runtime_button_bg = "linear-gradient(135deg, #431724, #7a2337)" if not alive_now else "linear-gradient(135deg, #12362b, #1f785b)"
     st.markdown(
         f"""
@@ -272,6 +271,18 @@ with left_strip:
           color: #e9f4ff;
         }}
         </style>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        f"""
+        <div class="runtime-card">
+          <div class="runtime-card-head">Ollama Runtime</div>
+          <div class="runtime-status">
+            <span><span class="runtime-dot {runtime_class}"></span>{runtime_state}</span>
+            <span>{runtime_source}</span>
+          </div>
+        </div>
         """,
         unsafe_allow_html=True,
     )
