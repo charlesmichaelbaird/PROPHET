@@ -347,6 +347,35 @@ with hero_right:
     st.markdown('<div class="panel">', unsafe_allow_html=True)
     configured_host = st.session_state.ollama_host
     alive_now = _is_ollama_api_alive(configured_host)
+    toggle_label = "Server Online" if alive_now else "Server Offline"
+    toggle_value = st.toggle(
+        toggle_label,
+        value=alive_now,
+        help="Toggle local Ollama runtime on/off.",
+    )
+    if toggle_value != alive_now:
+        if toggle_value:
+            started, message = _start_ollama_server(configured_host)
+            alive_now = started or _is_ollama_api_alive(configured_host)
+            if alive_now:
+                st.session_state.ollama_runtime_status = "online"
+                st.session_state.ollama_runtime_note = "Ollama online."
+                st.session_state.ollama_last_error = ""
+            else:
+                st.session_state.ollama_runtime_status = "failed"
+                st.session_state.ollama_runtime_note = "Ollama failed to start."
+                st.session_state.ollama_last_error = message
+        else:
+            stopped, message = _stop_ollama_server()
+            alive_now = _is_ollama_api_alive(configured_host)
+            if stopped and not alive_now:
+                st.session_state.ollama_runtime_status = "failed"
+                st.session_state.ollama_runtime_note = "Ollama failed to start."
+                st.session_state.ollama_last_error = ""
+            elif not stopped:
+                st.session_state.ollama_last_error = message
+                st.warning(message)
+
     if alive_now:
         st.session_state.ollama_runtime_status = "online"
         st.session_state.ollama_runtime_note = "Ollama online."
@@ -364,10 +393,6 @@ with hero_right:
         st.markdown('<div class="small">Status: <strong>Ollama failed to start</strong></div>', unsafe_allow_html=True)
     if st.session_state.ollama_last_error:
         st.markdown(f'<div class="small">{st.session_state.ollama_last_error}</div>', unsafe_allow_html=True)
-    if st.button("Retry Ollama Start", use_container_width=True):
-        st.session_state.ollama_autostart_attempted = False
-        _ensure_ollama_runtime_started(configured_host)
-        st.rerun()
     st.markdown('</div>', unsafe_allow_html=True)
 st.markdown("</section>", unsafe_allow_html=True)
 
