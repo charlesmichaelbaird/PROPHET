@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 import os
 import re
 from collections import Counter
@@ -10,7 +11,7 @@ from html import unescape
 from html.parser import HTMLParser
 from threading import Event
 from typing import Any
-from urllib.parse import urljoin, urlparse, urlunparse
+from urllib.parse import parse_qs, urljoin, urlparse, urlunparse
 import xml.etree.ElementTree as ET
 
 import requests
@@ -84,6 +85,19 @@ SOURCE_DATE_CONFIG = {
             "https://www.aljazeera.com/sitemaps/post-sitemap.xml",
             "https://www.aljazeera.com/sitemaps/news-sitemap.xml",
         ),
+        "rss_fallbacks": (
+            "https://www.aljazeera.com/xml/rss/all.xml",
+            "https://www.aljazeera.com/xml/rss/news.xml",
+        ),
+    },
+    "propublica": {
+        "label": "ProPublica",
+        "canonical_home": "https://www.propublica.org/",
+        "sitemap_indexes": (
+            "https://www.propublica.org/sitemap.xml",
+            "https://www.propublica.org/news-sitemap.xml",
+            "https://www.propublica.org/sitemap-news.xml",
+        ),
     },
 }
 
@@ -131,6 +145,7 @@ _SCRAPE_CANCEL_EVENTS: dict[str, Event] = {
     "ap": Event(),
     "bbc": Event(),
     "aljazeera": Event(),
+    "propublica": Event(),
 }
 
 
@@ -315,7 +330,7 @@ def _extract_published_datetime(article_html: str) -> str:
 
 def _is_browser_header_host(url: str) -> bool:
     host = urlparse(url).netloc.lower()
-    return "reuters.com" in host or "bbc.com" in host
+    return "reuters.com" in host or "bbc.com" in host or "aljazeera.com" in host or "propublica.org" in host
 
 
 def _is_reuters_host(url: str) -> bool:
@@ -498,11 +513,37 @@ def _entry_matches_date(entry: dict[str, str], target_date: datetime) -> bool:
     url = entry.get("url", "")
     if not url:
         return False
-    date_path = target_date.strftime("%Y/%m/%d")
-    return f"/{date_path}/" in url
+    date_path_padded = target_date.strftime("%Y/%m/%d")
+    date_path_unpadded = f"{target_date.year}/{target_date.month}/{target_date.day}"
+    return f"/{date_path_padded}/" in url or f"/{date_path_unpadded}/" in url
+
+
+def _sitemap_url_targets_date(sitemap_url: str, target_date: datetime, max_lag_days: int = 0) -> bool:
+    parsed = urlparse(sitemap_url)
+    params = parse_qs(parsed.query)
+    yyyy = (params.get("yyyy") or [""])[0]
+    mm = (params.get("mm") or [""])[0]
+    dd = (params.get("dd") or [""])[0]
+    if not (yyyy and mm and dd):
+        return False
+    try:
+        hinted_date = datetime(year=int(yyyy), month=int(mm), day=int(dd), tzinfo=timezone.utc)
+    except ValueError:
+        return False
+    day_delta = (target_date.date() - hinted_date.date()).days
+    return 0 <= day_delta <= max(max_lag_days, 0)
 
 
 def _is_english_candidate_url(source_name: str, candidate_url: str) -> bool:
+    if source_name == "propublica":
+        parsed = urlparse(candidate_url)
+        host = parsed.netloc.lower()
+        path = parsed.path.lower() or "/"
+        if "propublica.org" not in host:
+            return False
+        blocked_markers = ("/espanol/", "/spanish/", "/translation/", "/translations/")
+        return not any(marker in path for marker in blocked_markers)
+
     if source_name != "bbc":
         return True
 
@@ -516,6 +557,70 @@ def _is_english_candidate_url(source_name: str, candidate_url: str) -> bool:
     return any(path == prefix or path.startswith(f"{prefix}/") for prefix in BBC_ENGLISH_NEWS_PATH_PREFIXES)
 
 
+def _discover_aljazeera_rss_by_date(query_date: datetime, max_links: int) -> tuple[list[dict[str, str]], list[str], str]:
+    diagnostics: list[str] = []
+    discovered: list[dict[str, str]] = []
+    seen: set[str] = set()
+    rss_candidates = SOURCE_DATE_CONFIG["aljazeera"].get("rss_fallbacks", ())
+    session = _new_browser_session()
+    selected_feed = ""
+
+    for rss_url in rss_candidates:
+        selected_feed = rss_url
+        try:
+            rss_xml = fetch_url(rss_url, timeout=14, session=session)
+            root = ET.fromstring(rss_xml)
+        except Exception as exc:
+            diagnostics.append(f"rss_fetch_failed:{rss_url}:{exc}")
+            continue
+
+        items = root.findall(".//item")
+        if not items:
+            diagnostics.append(f"rss_no_items:{rss_url}")
+            continue
+
+        matched = 0
+        for item in items:
+            link_text = (item.findtext("link") or "").strip()
+            title = (item.findtext("title") or link_text).strip()
+            pub_date = (item.findtext("pubDate") or "").strip()
+            if not link_text or link_text in seen:
+                continue
+            if "/news/" not in urlparse(link_text).path.lower():
+                continue
+            if pub_date:
+                try:
+                    parsed_pub = parsedate_to_datetime(pub_date).astimezone(timezone.utc)
+                    if parsed_pub.date() != query_date.date():
+                        continue
+                    publication_date = parsed_pub.isoformat()
+                except Exception:
+                    diagnostics.append(f"rss_pubdate_parse_failed:{rss_url}:{pub_date}")
+                    continue
+            else:
+                continue
+
+            seen.add(link_text)
+            discovered.append(
+                {
+                    "url": link_text,
+                    "title": title or link_text,
+                    "publication_date": publication_date,
+                    "lastmod": publication_date,
+                }
+            )
+            matched += 1
+            if len(discovered) >= max_links:
+                diagnostics.append(f"rss_matched_limit_reached:{rss_url}")
+                return discovered, diagnostics, selected_feed
+
+        diagnostics.append(f"rss_date_matches:{rss_url}:{matched}")
+        if discovered:
+            break
+
+    return discovered, diagnostics, selected_feed
+
+
 def _discover_articles_by_date(
     source_name: str,
     query_date: datetime,
@@ -523,7 +628,7 @@ def _discover_articles_by_date(
 ) -> tuple[list[dict[str, str]], list[str], str]:
     config = SOURCE_DATE_CONFIG[source_name]
     diagnostics: list[str] = []
-    session = _new_browser_session() if source_name == "bbc" else None
+    session = _new_browser_session() if source_name in {"bbc", "aljazeera", "propublica"} else None
 
     discovered: list[dict[str, str]] = []
     seen: set[str] = set()
@@ -569,7 +674,9 @@ def _discover_articles_by_date(
                 if not _is_english_candidate_url(source_name, url):
                     diagnostics.append(f"filtered_non_english_url:{url}")
                     continue
-                if not _entry_matches_date(entry, query_date):
+                if source_name == "propublica" and _sitemap_url_targets_date(sitemap_url, query_date, max_lag_days=2):
+                    pass
+                elif not _entry_matches_date(entry, query_date):
                     continue
                 seen.add(url)
                 discovered.append(
@@ -589,7 +696,39 @@ def _discover_articles_by_date(
             else:
                 diagnostics.append(f"date_matches:{sitemap_url}:{matched}")
 
+    if source_name == "aljazeera" and not discovered:
+        fallback_links, fallback_diagnostics, fallback_source = _discover_aljazeera_rss_by_date(
+            query_date=query_date,
+            max_links=max_links,
+        )
+        diagnostics.extend(fallback_diagnostics)
+        if fallback_links:
+            diagnostics.append(f"fallback_used:aljazeera_rss:{fallback_source}")
+            return fallback_links, diagnostics, fallback_source or selected_index
+
     return discovered, diagnostics, selected_index
+
+
+def _is_propublica_english_page(article_url: str, article_html: str) -> bool:
+    url_path = urlparse(article_url).path.lower()
+    if any(marker in url_path for marker in ("/espanol/", "/spanish/", "/translation/", "/translations/")):
+        return False
+
+    declared_lang = extract_document_lang(article_html)
+    if declared_lang and not declared_lang.startswith("en"):
+        return False
+
+    locale_match = re.search(
+        r'<meta[^>]+(?:property|name)=["\'](?:og:locale|twitter:locale)["\'][^>]+content=["\']([^"\']+)["\']',
+        article_html,
+        flags=re.IGNORECASE,
+    )
+    if locale_match:
+        locale_value = locale_match.group(1).strip().lower().replace("-", "_")
+        if locale_value and not locale_value.startswith("en"):
+            return False
+
+    return True
 
 
 def extract_article_text(article_html: str) -> str:
@@ -1139,10 +1278,27 @@ def query_source_article_count_by_date(
     )
     if not links:
         label = SOURCE_DATE_CONFIG[source_key]["label"]
-        raise RuntimeError(
-            f"{label} date-based archive discovery returned no article links for {query_date:%m/%d/%Y}. "
-            "The archive endpoint may be temporarily unavailable or blocked."
+        has_fetch_or_parse_failures = any("fetch_failed" in row or "parse_failed" in row for row in diagnostics)
+        has_successful_sitemap_scan = any(
+            row.startswith("no_date_matches:") or row.startswith("date_matches:") or row.startswith("matched_limit_reached:")
+            for row in diagnostics
         )
+        if has_fetch_or_parse_failures and not has_successful_sitemap_scan:
+            diag_summary = " | ".join(diagnostics[:4]) if diagnostics else "no diagnostics"
+            raise RuntimeError(
+                f"{label} date-based query failed for {query_date:%m/%d/%Y}. "
+                f"Archive/discovery endpoint could not be parsed or fetched. Diagnostics: {diag_summary}"
+            )
+        return {
+            "source_name": source_key,
+            "selected_date": query_date.strftime("%m/%d/%Y"),
+            "links_found": 0,
+            "preview": [],
+            "diagnostics": diagnostics[:20],
+            "discovery_index": discovery_index,
+            "discovery_status": "no_results",
+            "status_message": f"No {label} English article links found for {query_date:%m/%d/%Y}.",
+        }
 
     return {
         "source_name": source_key,
@@ -1151,6 +1307,8 @@ def query_source_article_count_by_date(
         "preview": links[:10],
         "diagnostics": diagnostics[:20],
         "discovery_index": discovery_index,
+        "discovery_status": "ok",
+        "status_message": "Discovery complete.",
     }
 
 
@@ -1191,7 +1349,7 @@ def scrape_source_articles_by_date(
             "Try a different date or retry later."
         )
 
-    session = _new_browser_session() if source_key == "bbc" else None
+    session = _new_browser_session() if source_key in {"bbc", "aljazeera", "propublica"} else None
     source_home = SOURCE_DATE_CONFIG[source_key]["canonical_home"]
     attempted_articles = 0
     new_articles_saved = 0
@@ -1250,6 +1408,9 @@ def scrape_source_articles_by_date(
                         f"filtered_non_english_lang_decl:{link['url']}:lang={declared_lang or 'missing'}"
                     )
                     continue
+            if source_key == "propublica" and not _is_propublica_english_page(link["url"], article_html):
+                diagnostics.append(f"filtered_non_english_propublica:{link['url']}")
+                continue
 
             tokens = _filter_tokens(article_text)
             if not tokens:

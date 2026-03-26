@@ -6,10 +6,13 @@ from tempfile import TemporaryDirectory
 import json
 import unittest
 
-from mcp_server.storage import compute_content_hash, persist_article_if_new
+from mcp_server.storage import _safe_source_name, compute_content_hash, persist_article_if_new
 
 
 class TestStorageDeduplication(unittest.TestCase):
+    def test_source_override_maps_propublica_to_normalized_slug(self) -> None:
+        self.assertEqual(_safe_source_name("https://www.propublica.org/"), "propublica")
+
     def test_content_hash_is_stable_for_whitespace_variants(self) -> None:
         left = compute_content_hash("Alpha   beta\n\n gamma")
         right = compute_content_hash("Alpha beta gamma")

@@ -60,6 +60,8 @@ def _normalize_source_partition(entry: dict[str, Any]) -> str:
         return "bbc"
     if "reuters" in source_hint:
         return "reuters"
+    if "propublica" in source_hint:
+        return "propublica"
     parsed = urlparse(source_url or article_url)
     host = parsed.netloc.lower().replace("www.", "")
     if host:
@@ -510,6 +512,8 @@ def ingest_new_articles(
             "apnews-com": "ap-news",
             "www-bbc-com": "bbc",
             "bbc-com": "bbc",
+            "propublica-org": "propublica",
+            "www-propublica-org": "propublica",
         }
         normalized_source = source_aliases.get(normalized_source, normalized_source)
         article_entries, _ = _processed_article_entries(data_root=data_root)
