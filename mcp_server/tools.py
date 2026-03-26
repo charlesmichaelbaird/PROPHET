@@ -9,6 +9,7 @@ from collections import Counter
 from html import unescape
 from html.parser import HTMLParser
 from urllib.parse import urljoin, urlparse, urlunparse
+import xml.etree.ElementTree as ET
 
 import requests
 
@@ -51,6 +52,83 @@ _STOPWORDS = (
     | _MONTH_STOPWORDS
     | _DAY_STOPWORDS
     | _DATE_AND_FORMAT_STOPWORDS
+)
+
+REUTERS_DISCOVERY_PATHS = (
+    "/",
+    "/world/",
+    "/business/",
+    "/markets/",
+)
+
+_BROWSER_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+}
+
+SOURCE_DATE_CONFIG = {
+    "ap": {
+        "label": "AP News",
+        "canonical_home": "https://apnews.com/",
+        "sitemap_indexes": (
+            "https://apnews.com/sitemap.xml",
+            "https://apnews.com/news-sitemap.xml",
+        ),
+    },
+    "bbc": {
+        "label": "BBC",
+        "canonical_home": "https://www.bbc.com/",
+        "sitemap_indexes": (
+            "https://www.bbc.com/sitemaps/https-index-com-news.xml",
+            "https://www.bbc.com/sitemaps/https-index-com-archive.xml",
+            "https://www.bbc.com/sitemaps/https-news.xml",
+        ),
+    },
+}
+
+BBC_NON_ENGLISH_PATH_MARKERS = (
+    "/mundo/",
+    "/zhongwen/",
+    "/arabic/",
+    "/russian/",
+    "/hindi/",
+    "/afrique/",
+    "/korean/",
+    "/japanese/",
+    "/portuguese/",
+    "/ukrainian/",
+    "/urdu/",
+    "/uzbek/",
+    "/persian/",
+    "/serbian/",
+    "/telugu/",
+    "/tamil/",
+    "/pidgin/",
+    "/indonesia/",
+    "/bengali/",
+    "/hausa/",
+    "/swahili/",
+    "/gahuza/",
+    "/nepali/",
+    "/kyrgyz/",
+    "/azeri/",
+    "/marathi/",
+    "/gujarati/",
+    "/pashto/",
+    "/somali/",
+    "/burmese/",
+    "/thai/",
+    "/uz/",
+)
+
+BBC_ENGLISH_NEWS_PATH_PREFIXES = (
+    "/news",
+    "/newsround",
 )
 
 
@@ -174,20 +252,114 @@ class DocumentTitleParser(HTMLParser):
         return self.meta_title or title_tag
 
 
-def fetch_url(url: str, timeout: int = 10) -> str:
+class DocumentLangParser(HTMLParser):
+    """Extract the html[lang] declaration from a page."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.lang = ""
+
+    def handle_starttag(self, tag: str, attrs) -> None:  # type: ignore[override]
+        if self.lang or tag.lower() != "html":
+            return
+        for key, value in attrs:
+            if str(key).lower() == "lang" and value:
+                self.lang = str(value).strip().lower()
+                break
+
+
+def _extract_iso_date_candidates(article_html: str) -> list[str]:
+    candidates: list[str] = []
+    patterns = (
+        r'<meta[^>]+property=["\']article:published_time["\'][^>]+content=["\']([^"\']+)["\']',
+        r'<meta[^>]+name=["\']pubdate["\'][^>]+content=["\']([^"\']+)["\']',
+        r'<meta[^>]+name=["\']publishdate["\'][^>]+content=["\']([^"\']+)["\']',
+        r'<meta[^>]+itemprop=["\']datePublished["\'][^>]+content=["\']([^"\']+)["\']',
+        r'<time[^>]+datetime=["\']([^"\']+)["\']',
+    )
+    for pattern in patterns:
+        for match in re.findall(pattern, article_html, flags=re.IGNORECASE):
+            candidate = str(match).strip()
+            if candidate and candidate not in candidates:
+                candidates.append(candidate)
+    return candidates
+
+
+def _normalize_iso_datetime(value: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    normalized = raw.replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        try:
+            parsed = datetime.strptime(raw[:10], "%Y-%m-%d")
+        except ValueError:
+            return ""
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).isoformat()
+
+
+def _extract_published_datetime(article_html: str) -> str:
+    for candidate in _extract_iso_date_candidates(article_html):
+        normalized = _normalize_iso_datetime(candidate)
+        if normalized:
+            return normalized
+    return ""
+
+
+def _is_browser_header_host(url: str) -> bool:
+    host = urlparse(url).netloc.lower()
+    return "reuters.com" in host or "bbc.com" in host
+
+
+def _is_reuters_host(url: str) -> bool:
+    return "reuters.com" in urlparse(url).netloc.lower()
+
+
+def _new_browser_session() -> requests.Session:
+    session = requests.Session()
+    session.headers.update(_BROWSER_HEADERS)
+    return session
+
+
+def fetch_url(
+    url: str,
+    timeout: int = 10,
+    session: requests.Session | None = None,
+    headers: dict[str, str] | None = None,
+) -> str:
     """Fetch raw HTML for a URL with basic validation and error messages."""
     parsed = urlparse(url)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise ValueError("URL must include http:// or https:// and a valid host")
 
+    request_headers = {"User-Agent": "PROPHET-ZeroCost/1.0 (+https://example.local)"}
+    if _is_browser_header_host(url):
+        request_headers.update(_BROWSER_HEADERS)
+    if headers:
+        request_headers.update(headers)
+
     try:
-        response = requests.get(
+        client = session or requests
+        response = client.get(
             url,
             timeout=timeout,
-            headers={"User-Agent": "PROPHET-ZeroCost/1.0 (+https://example.local)"},
+            headers=request_headers,
         )
         response.raise_for_status()
         return response.text
+    except requests.exceptions.HTTPError as exc:
+        status_code = exc.response.status_code if exc.response is not None else None
+        if status_code in {401, 403, 429}:
+            raise RuntimeError(
+                f"Request blocked by target site (HTTP {status_code}). "
+                "Try alternate discovery pages or retry later."
+            ) from exc
+        raise RuntimeError(f"Failed to fetch URL (HTTP {status_code}): {exc}") from exc
     except requests.exceptions.RequestException as exc:
         raise RuntimeError(f"Failed to fetch URL: {exc}") from exc
 
@@ -246,6 +418,178 @@ def extract_article_links(homepage_html: str, homepage_url: str, max_links: int 
     return links
 
 
+def _discover_reuters_links(max_links: int) -> tuple[list[dict[str, str]], str, list[str]]:
+    """Try Reuters homepage/discovery pages and return first link set found."""
+    base_url = "https://www.reuters.com/"
+    session = _new_browser_session()
+    diagnostics: list[str] = []
+
+    for discovery_path in REUTERS_DISCOVERY_PATHS:
+        candidate_url = urljoin(base_url, discovery_path)
+        try:
+            homepage_html = fetch_url(candidate_url, timeout=12, session=session)
+            links = extract_article_links(homepage_html, candidate_url, max_links=max_links)
+        except Exception as exc:
+            diagnostics.append(f"blocked_or_fetch_failed:{candidate_url}:{exc}")
+            continue
+
+        if links:
+            diagnostics.append(f"discovery_success:{candidate_url}:links={len(links)}")
+            return links, candidate_url, diagnostics
+        diagnostics.append(f"no_links_found:{candidate_url}")
+
+    return [], base_url, diagnostics
+
+
+def _parse_mmddyyyy(value: str) -> datetime:
+    return datetime.strptime(value.strip(), "%m/%d/%Y")
+
+
+def _tag_local_name(tag: str) -> str:
+    return tag.split("}", 1)[-1] if "}" in tag else tag
+
+
+def _parse_sitemap_document(xml_text: str) -> dict[str, list[dict[str, str]] | list[str]]:
+    root = ET.fromstring(xml_text)
+    root_name = _tag_local_name(root.tag).lower()
+    if root_name == "sitemapindex":
+        sitemap_locs: list[str] = []
+        for node in root.iter():
+            if _tag_local_name(node.tag).lower() == "loc" and node.text:
+                sitemap_locs.append(node.text.strip())
+        return {"type": ["sitemapindex"], "sitemap_locs": sitemap_locs}
+
+    if root_name == "urlset":
+        entries: list[dict[str, str]] = []
+        for url_node in root:
+            if _tag_local_name(url_node.tag).lower() != "url":
+                continue
+            loc = ""
+            lastmod = ""
+            publication_date = ""
+            title = ""
+            for child in url_node.iter():
+                local = _tag_local_name(child.tag).lower()
+                text = (child.text or "").strip()
+                if local == "loc" and text and not loc:
+                    loc = text
+                elif local == "lastmod" and text and not lastmod:
+                    lastmod = text
+                elif local == "publication_date" and text and not publication_date:
+                    publication_date = text
+                elif local == "title" and text and not title:
+                    title = text
+            if loc:
+                entries.append({"url": loc, "title": title, "lastmod": lastmod, "publication_date": publication_date})
+        return {"type": ["urlset"], "entries": entries}
+
+    return {"type": [root_name]}
+
+
+def _entry_matches_date(entry: dict[str, str], target_date: datetime) -> bool:
+    expected = target_date.date().isoformat()
+    for key in ("publication_date", "lastmod"):
+        value = entry.get(key, "")
+        if value.startswith(expected):
+            return True
+
+    url = entry.get("url", "")
+    if not url:
+        return False
+    date_path = target_date.strftime("%Y/%m/%d")
+    return f"/{date_path}/" in url
+
+
+def _is_english_candidate_url(source_name: str, candidate_url: str) -> bool:
+    if source_name != "bbc":
+        return True
+
+    parsed = urlparse(candidate_url)
+    host = parsed.netloc.lower()
+    path = parsed.path.lower() or "/"
+    if "bbc.com" not in host:
+        return False
+    if any(marker in path for marker in BBC_NON_ENGLISH_PATH_MARKERS):
+        return False
+    return any(path == prefix or path.startswith(f"{prefix}/") for prefix in BBC_ENGLISH_NEWS_PATH_PREFIXES)
+
+
+def _discover_articles_by_date(
+    source_name: str,
+    query_date: datetime,
+    max_links: int,
+) -> tuple[list[dict[str, str]], list[str], str]:
+    config = SOURCE_DATE_CONFIG[source_name]
+    diagnostics: list[str] = []
+    session = _new_browser_session() if source_name == "bbc" else None
+
+    discovered: list[dict[str, str]] = []
+    seen: set[str] = set()
+    selected_index = config["sitemap_indexes"][0]
+    month_token = query_date.strftime("%Y-%m")
+
+    for sitemap_index_url in config["sitemap_indexes"]:
+        selected_index = sitemap_index_url
+        try:
+            index_xml = fetch_url(sitemap_index_url, timeout=14, session=session)
+            parsed_index = _parse_sitemap_document(index_xml)
+        except Exception as exc:
+            diagnostics.append(f"index_fetch_failed:{sitemap_index_url}:{exc}")
+            continue
+
+        if parsed_index.get("type", [""])[0] == "urlset":
+            candidate_sitemaps = [sitemap_index_url]
+        else:
+            locs = parsed_index.get("sitemap_locs", [])
+            filtered_locs = [loc for loc in locs if month_token in loc] or list(locs)
+            candidate_sitemaps = filtered_locs[:20]
+
+        if not candidate_sitemaps:
+            diagnostics.append(f"no_candidate_sitemaps:{sitemap_index_url}")
+            continue
+
+        for sitemap_url in candidate_sitemaps:
+            try:
+                sitemap_xml = index_xml if sitemap_url == sitemap_index_url else fetch_url(sitemap_url, timeout=14, session=session)
+                parsed_sitemap = _parse_sitemap_document(sitemap_xml)
+                entries = parsed_sitemap.get("entries", [])
+            except Exception as exc:
+                diagnostics.append(f"sitemap_parse_failed:{sitemap_url}:{exc}")
+                continue
+
+            matched = 0
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                url = entry.get("url", "")
+                if not url or url in seen:
+                    continue
+                if not _is_english_candidate_url(source_name, url):
+                    diagnostics.append(f"filtered_non_english_url:{url}")
+                    continue
+                if not _entry_matches_date(entry, query_date):
+                    continue
+                seen.add(url)
+                discovered.append(
+                    {
+                        "url": url,
+                        "title": entry.get("title", "") or url,
+                        "publication_date": entry.get("publication_date", ""),
+                        "lastmod": entry.get("lastmod", ""),
+                    }
+                )
+                matched += 1
+                if len(discovered) >= max_links:
+                    diagnostics.append(f"matched_limit_reached:{sitemap_url}")
+                    return discovered, diagnostics, selected_index
+            if matched == 0:
+                diagnostics.append(f"no_date_matches:{sitemap_url}")
+            else:
+                diagnostics.append(f"date_matches:{sitemap_url}:{matched}")
+
+    return discovered, diagnostics, selected_index
+
+
 def extract_article_text(article_html: str) -> str:
     """Extract article body text with a simple paragraph strategy."""
     parser = ArticleTextParser()
@@ -283,6 +627,14 @@ def extract_document_title(article_html: str) -> str:
     parser.feed(article_html)
     parser.close()
     return re.sub(r"\s+", " ", unescape(parser.get_title())).strip()
+
+
+def extract_document_lang(article_html: str) -> str:
+    """Extract the lowercase html[lang] value (if present)."""
+    parser = DocumentLangParser()
+    parser.feed(article_html)
+    parser.close()
+    return parser.lang
 
 
 def _tokenize(text: str) -> list[str]:
@@ -458,8 +810,22 @@ def analyze_homepage(
     """Scrape homepage article links and compute top-word metrics without LLMs."""
     scrape_started_at = datetime.now(timezone.utc)
     ensure_data_directories()
-    homepage_html = fetch_url(homepage_url)
-    link_entries = extract_article_links(homepage_html, homepage_url, max_links=max_articles * 3)
+    diagnostics: list[str] = []
+    reuters_mode = _is_reuters_host(homepage_url)
+    reuters_session: requests.Session | None = _new_browser_session() if reuters_mode else None
+    discovery_url = homepage_url
+
+    if reuters_mode:
+        link_entries, discovery_url, diagnostics = _discover_reuters_links(max_links=max_articles * 3)
+        if not link_entries:
+            diag_summary = " | ".join(diagnostics[:4]) if diagnostics else "no diagnostics"
+            raise RuntimeError(
+                "Reuters blocked discovery requests or returned no candidate article links. "
+                f"Try again later or use an alternate Reuters discovery page. Diagnostics: {diag_summary}"
+            )
+    else:
+        homepage_html = fetch_url(homepage_url)
+        link_entries = extract_article_links(homepage_html, homepage_url, max_links=max_articles * 3)
 
     keyword_clean = keyword.strip()
     keyword_mode_active = bool(keyword_filter_enabled)
@@ -485,7 +851,7 @@ def analyze_homepage(
 
         attempted_articles += 1
         try:
-            article_html = fetch_url(link["url"], timeout=12)
+            article_html = fetch_url(link["url"], timeout=12, session=reuters_session)
             page_title = extract_document_title(article_html)
             article_text = extract_article_text(article_html)
             if not article_text:
@@ -519,15 +885,24 @@ def analyze_homepage(
                 }
             )
             scraped_articles.append(preview_entry)
+            homepage_published = _extract_published_datetime(article_html)
+            homepage_published_source = "page_metadata" if homepage_published else "scrape_timestamp_fallback"
+            diagnostics.append(f"storage_date_source:{homepage_published_source}:{link['url']}")
             persist_result = persist_article_if_new(
                 homepage_url=homepage_url,
                 source_homepage_url=homepage_url,
                 article_url=link["url"],
                 title=preview_entry["title"],
                 scrape_timestamp=datetime.now(timezone.utc),
+                published_at=homepage_published,
+                published_date_source=homepage_published_source,
                 clean_text=article_text,
                 article_html=article_html,
-                article_metadata=preview_entry,
+                article_metadata={
+                    **preview_entry,
+                    "published_date": homepage_published,
+                    "published_date_source": homepage_published_source,
+                },
             )
             manifest_path = persist_result.get("manifest_path", manifest_path)
             if persist_result.get("status") == "saved":
@@ -551,7 +926,9 @@ def analyze_homepage(
                         "status": "duplicate",
                     }
                 )
-        except Exception:
+        except Exception as exc:
+            if reuters_mode:
+                diagnostics.append(f"article_fetch_failed:{link['url']}:{exc}")
             failed_urls.append(link["url"])
             continue
 
@@ -649,13 +1026,15 @@ def analyze_homepage(
         "persisted_articles": persisted_articles[:8],
         "duplicate_articles": duplicate_articles[:8],
         "article_manifest_path": manifest_path,
+        "fetch_diagnostics": diagnostics[:30],
     }
 
     run_index_path = write_run_index(
-        homepage_url=homepage_url,
+        homepage_url=discovery_url,
         scrape_timestamp=scrape_started_at,
         summary_payload={
             "homepage_url": homepage_url,
+            "discovery_url": discovery_url,
             "scrape_started_at": scrape_started_at.isoformat(),
             "links_found": result["links_found"],
             "articles_attempted": result["articles_attempted"],
@@ -670,6 +1049,7 @@ def analyze_homepage(
             "persisted_articles": persisted_articles,
             "duplicate_articles": duplicate_articles,
             "article_manifest_path": manifest_path,
+            "fetch_diagnostics": diagnostics[:100],
         },
     )
     result["run_index_path"] = run_index_path
@@ -681,8 +1061,20 @@ def query_site_article_count(
     max_links: int = 200,
 ) -> dict:
     """Run lightweight article-link discovery/count without scraping article bodies."""
-    homepage_html = fetch_url(homepage_url)
-    link_entries = extract_article_links(homepage_html, homepage_url, max_links=max_links)
+    diagnostics: list[str] = []
+    discovery_url = homepage_url
+    if _is_reuters_host(homepage_url):
+        link_entries, discovery_url, diagnostics = _discover_reuters_links(max_links=max_links)
+        if not link_entries:
+            diag_summary = " | ".join(diagnostics[:4]) if diagnostics else "no diagnostics"
+            raise RuntimeError(
+                "Reuters blocked lightweight discovery requests (or returned no article links). "
+                f"An alternate discovery path may be needed. Diagnostics: {diag_summary}"
+            )
+    else:
+        homepage_html = fetch_url(homepage_url)
+        link_entries = extract_article_links(homepage_html, homepage_url, max_links=max_links)
+
     preview = []
     for entry in link_entries[:10]:
         preview.append(
@@ -694,9 +1086,262 @@ def query_site_article_count(
 
     return {
         "homepage_url": homepage_url,
+        "discovery_url": discovery_url,
         "links_found": len(link_entries),
         "preview": preview,
+        "diagnostics": diagnostics[:20],
     }
+
+
+def query_source_article_count_by_date(
+    source_name: str,
+    date_str: str,
+    max_links: int = 250,
+) -> dict:
+    """Lightweight metadata-only date-based article discovery for supported sources."""
+    source_key = source_name.strip().lower()
+    if source_key not in SOURCE_DATE_CONFIG:
+        raise ValueError(f"Unsupported source '{source_name}'. Expected one of: {', '.join(SOURCE_DATE_CONFIG)}")
+
+    query_date = _parse_mmddyyyy(date_str)
+    links, diagnostics, discovery_index = _discover_articles_by_date(
+        source_name=source_key,
+        query_date=query_date,
+        max_links=max_links,
+    )
+    if not links:
+        label = SOURCE_DATE_CONFIG[source_key]["label"]
+        raise RuntimeError(
+            f"{label} date-based archive discovery returned no article links for {query_date:%m/%d/%Y}. "
+            "The archive endpoint may be temporarily unavailable or blocked."
+        )
+
+    return {
+        "source_name": source_key,
+        "selected_date": query_date.strftime("%m/%d/%Y"),
+        "links_found": len(links),
+        "preview": links[:10],
+        "diagnostics": diagnostics[:20],
+        "discovery_index": discovery_index,
+    }
+
+
+def scrape_source_articles_by_date(
+    source_name: str,
+    date_str: str,
+    max_articles: int = 200,
+) -> dict:
+    """Full date-based scrape workflow for supported sources."""
+    source_key = source_name.strip().lower()
+    if source_key not in SOURCE_DATE_CONFIG:
+        raise ValueError(f"Unsupported source '{source_name}'. Expected one of: {', '.join(SOURCE_DATE_CONFIG)}")
+
+    query_date = _parse_mmddyyyy(date_str)
+    scrape_started_at = datetime.now(timezone.utc)
+    ensure_data_directories()
+    links, diagnostics, discovery_index = _discover_articles_by_date(
+        source_name=source_key,
+        query_date=query_date,
+        max_links=max_articles * 3,
+    )
+    if not links:
+        label = SOURCE_DATE_CONFIG[source_key]["label"]
+        raise RuntimeError(
+            f"{label} date-based archive discovery returned no article links for {query_date:%m/%d/%Y}. "
+            "Try a different date or retry later."
+        )
+
+    session = _new_browser_session() if source_key == "bbc" else None
+    source_home = SOURCE_DATE_CONFIG[source_key]["canonical_home"]
+    attempted_articles = 0
+    new_articles_saved = 0
+    duplicate_articles_skipped = 0
+    failed_urls: list[str] = []
+    scraped_articles: list[dict[str, str]] = []
+    article_texts: list[str] = []
+    article_sources: list[dict[str, str]] = []
+    persisted_articles: list[dict[str, str]] = []
+    duplicate_articles: list[dict[str, str]] = []
+    manifest_path = ""
+    word_totals: Counter[str] = Counter()
+    article_frequency: Counter[str] = Counter()
+
+    for link in links:
+        if attempted_articles >= max_articles:
+            break
+        attempted_articles += 1
+        try:
+            article_html = fetch_url(link["url"], timeout=14, session=session)
+            page_title = extract_document_title(article_html) or link.get("title", "") or link["url"]
+            article_text = extract_article_text(article_html)
+            if not article_text:
+                diagnostics.append(f"article_parse_empty:{link['url']}")
+                continue
+            if source_key == "bbc":
+                declared_lang = extract_document_lang(article_html)
+                if not declared_lang.startswith("en"):
+                    diagnostics.append(
+                        f"filtered_non_english_lang_decl:{link['url']}:lang={declared_lang or 'missing'}"
+                    )
+                    continue
+
+            tokens = _filter_tokens(article_text)
+            if not tokens:
+                diagnostics.append(f"article_tokens_empty:{link['url']}")
+                continue
+
+            token_counts = Counter(tokens)
+            word_totals.update(token_counts)
+            article_frequency.update(token_counts.keys())
+            article_texts.append(article_text)
+            article_sources.append({"url": link["url"], "text": article_text})
+            preview_entry = {"url": link["url"], "title": page_title, "word_count": len(tokens)}
+            scraped_articles.append(preview_entry)
+
+            page_published = _extract_published_datetime(article_html)
+            published_candidates = (
+                link.get("publication_date", ""),
+                link.get("lastmod", ""),
+                page_published,
+                query_date.strftime("%Y-%m-%d"),
+            )
+            published_at = ""
+            published_source = ""
+            for candidate in published_candidates:
+                normalized = _normalize_iso_datetime(candidate)
+                if normalized:
+                    published_at = normalized
+                    if candidate == link.get("publication_date", ""):
+                        published_source = "sitemap_publication_date"
+                    elif candidate == link.get("lastmod", ""):
+                        published_source = "sitemap_lastmod"
+                    elif candidate == page_published:
+                        published_source = "page_metadata"
+                    else:
+                        published_source = "query_date_fallback"
+                    break
+            if not published_at:
+                published_at = datetime.now(timezone.utc).isoformat()
+                published_source = "scrape_timestamp_fallback"
+            diagnostics.append(f"storage_date_source:{published_source}:{link['url']}")
+
+            persist_result = persist_article_if_new(
+                homepage_url=source_home,
+                source_homepage_url=source_home,
+                article_url=link["url"],
+                title=preview_entry["title"],
+                scrape_timestamp=datetime.now(timezone.utc),
+                published_at=published_at,
+                published_date_source=published_source,
+                clean_text=article_text,
+                article_html=article_html,
+                article_metadata={
+                    **preview_entry,
+                    "published_date": published_at,
+                    "published_date_source": published_source,
+                },
+            )
+            manifest_path = persist_result.get("manifest_path", manifest_path)
+            if persist_result.get("status") == "saved":
+                new_articles_saved += 1
+                persisted_articles.append(
+                    {
+                        "url": preview_entry["url"],
+                        "title": preview_entry["title"],
+                        "content_hash": persist_result.get("content_hash", ""),
+                        **persist_result.get("written_paths", {}),
+                    }
+                )
+            else:
+                duplicate_articles_skipped += 1
+                duplicate_articles.append(
+                    {
+                        "url": preview_entry["url"],
+                        "title": preview_entry["title"],
+                        "content_hash": persist_result.get("content_hash", ""),
+                        "status": "duplicate",
+                    }
+                )
+        except Exception as exc:
+            diagnostics.append(f"article_fetch_failed:{link['url']}:{exc}")
+            failed_urls.append(link["url"])
+
+    table_rows = []
+    article_count = len(scraped_articles)
+    for word, total_occurrences in word_totals.most_common(10):
+        containing_articles = article_frequency[word]
+        coverage = (containing_articles / article_count * 100) if article_count else 0.0
+        table_rows.append(
+            {
+                "word": word,
+                "total_occurrences": total_occurrences,
+                "article_count": containing_articles,
+                "article_coverage_pct": round(coverage, 1),
+            }
+        )
+
+    summary, representative_line = build_summary(
+        article_texts=article_texts,
+        top_words=table_rows,
+        articles_scraped=article_count,
+        links_found=len(links),
+    )
+    representative_source_url = _select_supporting_article_url(
+        representative_line=representative_line,
+        article_sources=article_sources,
+    )
+
+    result = {
+        "source_name": source_key,
+        "selected_date": query_date.strftime("%m/%d/%Y"),
+        "links_found": len(links),
+        "articles_attempted": attempted_articles,
+        "articles_scraped": article_count,
+        "articles_failed": len(failed_urls),
+        "articles_new_saved": new_articles_saved,
+        "articles_duplicates_skipped": duplicate_articles_skipped,
+        "scraped_preview": scraped_articles[:8],
+        "top_words": table_rows,
+        "summary": summary,
+        "representative_line": representative_line,
+        "representative_source_url": representative_source_url,
+        "keyword_filter_enabled": False,
+        "keyword": "",
+        "candidate_articles_considered": attempted_articles,
+        "matching_articles": 0,
+        "keyword_suggestions": [],
+        "article_corpus": [
+            {"url": article["url"], "title": article["title"], "text": source["text"]}
+            for article, source in zip(scraped_articles, article_sources)
+        ],
+        "persisted_articles": persisted_articles[:8],
+        "duplicate_articles": duplicate_articles[:8],
+        "article_manifest_path": manifest_path,
+        "fetch_diagnostics": diagnostics[:40],
+        "discovery_index": discovery_index,
+    }
+
+    run_index_path = write_run_index(
+        homepage_url=source_home,
+        scrape_timestamp=scrape_started_at,
+        summary_payload={
+            "source_name": source_key,
+            "selected_date": query_date.strftime("%m/%d/%Y"),
+            "discovery_index": discovery_index,
+            "links_found": result["links_found"],
+            "articles_attempted": result["articles_attempted"],
+            "articles_scraped": result["articles_scraped"],
+            "articles_failed": result["articles_failed"],
+            "articles_new_saved": result["articles_new_saved"],
+            "articles_duplicates_skipped": result["articles_duplicates_skipped"],
+            "summary": result["summary"],
+            "top_words": result["top_words"],
+            "article_manifest_path": manifest_path,
+            "fetch_diagnostics": diagnostics[:100],
+        },
+    )
+    result["run_index_path"] = run_index_path
+    return result
 
 
 def ask_the_prophet(

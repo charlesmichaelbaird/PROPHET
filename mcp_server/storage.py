@@ -57,6 +57,28 @@ def _article_id(article_url: str, title: str) -> str:
     return f"{digest}-{_slugify(title, max_len=50)}"
 
 
+def _coerce_datetime(value: str | datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.astimezone(timezone.utc)
+    raw = str(value).strip()
+    if not raw:
+        return None
+    normalized = raw.replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        try:
+            parsed = datetime.strptime(raw[:10], "%Y-%m-%d")
+        except ValueError:
+            return None
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
 def normalize_clean_text(clean_text: str) -> str:
     """Normalize cleaned article text so hashing is stable across whitespace variance."""
     return re.sub(r"\s+", " ", clean_text).strip()
@@ -106,12 +128,15 @@ def build_article_paths(
     article_url: str,
     article_title: str,
     scrape_time: datetime,
+    published_at: str | datetime | None = None,
     data_root: Path | None = None,
 ) -> dict[str, Path]:
     """Build deterministic article file paths under raw/ and processed/."""
     layout = ensure_data_directories(data_root)
     source = _safe_source_name(homepage_url)
-    day_bucket = scrape_time.strftime("%Y-%m-%d")
+    published_dt = _coerce_datetime(published_at)
+    day_bucket = (published_dt or scrape_time.astimezone(timezone.utc)).strftime("%Y-%m-%d")
+    date_source = "published_date" if published_dt else "scrape_timestamp_fallback"
     article_key = _article_id(article_url, article_title or article_url)
 
     raw_base = layout["raw"] / source / day_bucket
@@ -125,6 +150,8 @@ def build_article_paths(
         "clean_text": processed_base / "clean_text.txt",
         "processed_dir": processed_base,
         "article_key": Path(article_key),
+        "day_bucket": Path(day_bucket),
+        "storage_date_source": Path(date_source),
     }
 
 
@@ -136,6 +163,8 @@ def write_article_files(
     title: str,
     scrape_timestamp: datetime,
     clean_text: str,
+    published_at: str | datetime | None = None,
+    published_date_source: str = "",
     article_html: str = "",
     article_metadata: dict[str, Any] | None = None,
     data_root: Path | None = None,
@@ -146,6 +175,7 @@ def write_article_files(
         article_url=article_url,
         article_title=title,
         scrape_time=scrape_timestamp,
+        published_at=published_at,
         data_root=data_root,
     )
 
@@ -160,6 +190,12 @@ def write_article_files(
         "article_url": article_url,
         "title": title,
         "scrape_timestamp": scrape_timestamp.astimezone(timezone.utc).isoformat(),
+        "published_date": (
+            _coerce_datetime(published_at).isoformat() if _coerce_datetime(published_at) else ""
+        ),
+        "published_date_source": published_date_source,
+        "storage_date_bucket": str(paths["day_bucket"]),
+        "storage_date_source": str(paths["storage_date_source"]),
         "raw_html_path": str(paths["raw_html"]),
         "clean_text_path": str(paths["clean_text"]),
     }
@@ -183,6 +219,8 @@ def persist_article_if_new(
     title: str,
     scrape_timestamp: datetime,
     clean_text: str,
+    published_at: str | datetime | None = None,
+    published_date_source: str = "",
     article_html: str = "",
     article_metadata: dict[str, Any] | None = None,
     data_root: Path | None = None,
@@ -201,6 +239,9 @@ def persist_article_if_new(
     if existing:
         existing["duplicate_hits"] = int(existing.get("duplicate_hits", 0)) + 1
         existing["last_seen_at"] = scrape_timestamp.astimezone(timezone.utc).isoformat()
+        if _coerce_datetime(published_at):
+            existing["published_date"] = _coerce_datetime(published_at).isoformat()
+            existing["published_date_source"] = published_date_source or existing.get("published_date_source", "")
         if article_url and article_url not in existing.get("seen_urls", []):
             existing.setdefault("seen_urls", []).append(article_url)
         save_article_index(manifest, data_root)
@@ -217,6 +258,8 @@ def persist_article_if_new(
         article_url=article_url,
         title=title,
         scrape_timestamp=scrape_timestamp,
+        published_at=published_at,
+        published_date_source=published_date_source,
         clean_text=clean_text,
         article_html=article_html,
         article_metadata=article_metadata,
@@ -228,6 +271,8 @@ def persist_article_if_new(
         "article_url": article_url,
         "title": title,
         "scrape_timestamp": scrape_timestamp.astimezone(timezone.utc).isoformat(),
+        "published_date": _coerce_datetime(published_at).isoformat() if _coerce_datetime(published_at) else "",
+        "published_date_source": published_date_source,
         "file_paths": written_paths,
         "duplicate_hits": 0,
         "seen_urls": [article_url] if article_url else [],

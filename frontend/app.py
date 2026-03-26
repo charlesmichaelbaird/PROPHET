@@ -20,7 +20,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from mcp_server.server import run_article_count_query, run_ask_the_prophet, run_pipeline
+from mcp_server.server import (
+    run_article_count_query_by_date,
+    run_ask_the_prophet,
+    run_pipeline_by_date,
+)
 from mcp_server.rag import discover_ollama_models, get_indexing_status, ingest_new_articles
 from frontend.btc_data import fetch_btc_history, fetch_spot_btc_price
 
@@ -148,11 +152,20 @@ if "ap_query_result" not in st.session_state:
     st.session_state.ap_query_result = {}
 if "ap_scrape_feedback" not in st.session_state:
     st.session_state.ap_scrape_feedback = ""
+if "bbc_query_result" not in st.session_state:
+    st.session_state.bbc_query_result = {}
+if "bbc_scrape_feedback" not in st.session_state:
+    st.session_state.bbc_scrape_feedback = ""
+if "ap_selected_date" not in st.session_state:
+    st.session_state.ap_selected_date = datetime.now(timezone.utc).strftime("%m/%d/%Y")
+if "bbc_selected_date" not in st.session_state:
+    st.session_state.bbc_selected_date = datetime.now(timezone.utc).strftime("%m/%d/%Y")
 
 
-AP_NEWS_URL = "https://apnews.com/"
 AP_SOURCE_DIRNAME = "apnews-com"
 AP_SCRAPE_FALLBACK_MAX_ARTICLES = 200
+BBC_SOURCE_DIRNAME = "www-bbc-com"
+BBC_SCRAPE_FALLBACK_MAX_ARTICLES = 200
 
 
 def _is_ollama_api_alive(host: str) -> bool:
@@ -255,6 +268,28 @@ def _count_locally_scraped_ap_articles() -> int:
     return sum(1 for _ in processed_root.glob("*/*/metadata.json"))
 
 
+def _count_locally_scraped_bbc_articles() -> int:
+    processed_root = REPO_ROOT / "data" / "processed" / BBC_SOURCE_DIRNAME
+    if not processed_root.exists():
+        return 0
+    return sum(1 for _ in processed_root.glob("*/*/metadata.json"))
+
+
+def _format_bbc_user_error(error_message: str) -> str:
+    normalized = (error_message or "").lower()
+    if any(token in normalized for token in ("blocked", "forbidden", "http 401", "http 403", "http 429")):
+        return (
+            "BBC blocked this automated request. "
+            "Try again later; if blocking persists, an alternate discovery path/source may be needed."
+        )
+    if "no candidate article links" in normalized or "no article links" in normalized:
+        return (
+            "BBC discovery succeeded but no article links were detected from the current discovery pages. "
+            "Try again later or use an alternate BBC discovery path."
+        )
+    return error_message or "BBC request failed."
+
+
 st.markdown('<section class="hero">', unsafe_allow_html=True)
 _ensure_ollama_runtime_started(st.session_state.ollama_host)
 hero_left, hero_middle, hero_right = st.columns([2.5, 1.8, 1.2], gap="medium")
@@ -320,11 +355,29 @@ with hero_middle:
     if not model_discovery.get("available"):
         st.markdown('<div class="small">Indexing requires local Ollama runtime.</div>', unsafe_allow_html=True)
     if index_clicked:
+        progress_slot = st.empty()
+        progress_bar = progress_slot.progress(0)
+        progress_label = st.empty()
+
+        def _index_progress(event: dict) -> None:
+            total = max(int(event.get("total_to_index", event.get("eligible_for_indexing", 0)) or 0), 0)
+            position = max(int(event.get("article_position", 0) or 0), 0)
+            if event.get("event") == "article_done":
+                position = max(int(event.get("indexed_so_far", position) or position), position)
+            percent = int((position / total) * 100) if total > 0 else 5
+            progress_bar.progress(min(max(percent, 0), 100))
+            progress_label.markdown(
+                f'<div class="small">Indexing progress: <strong>{position}</strong> / <strong>{total}</strong></div>',
+                unsafe_allow_html=True,
+            )
+
         with st.spinner("Indexing saved local corpus from /data ..."):
             st.session_state.index_data_feedback = ingest_new_articles(
                 embedding_model=st.session_state.selected_embedding_model,
                 answer_model=st.session_state.selected_answer_model,
+                progress_callback=_index_progress,
             )
+        progress_bar.progress(100)
 
     index_feedback = st.session_state.index_data_feedback
     if index_feedback:
@@ -339,6 +392,16 @@ with hero_middle:
                 ),
                 unsafe_allow_html=True,
             )
+            active_root = index_feedback.get("active_model_index_root", "")
+            counts_by_source = index_feedback.get("indexed_counts_by_source", {}) or {}
+            if active_root:
+                st.markdown(
+                    f'<div class="small">Active index root: <strong>{active_root}</strong></div>',
+                    unsafe_allow_html=True,
+                )
+            if counts_by_source:
+                counts_text = " · ".join(f"{source}: {count}" for source, count in sorted(counts_by_source.items()))
+                st.markdown(f'<div class="small">Indexed by source: {counts_text}</div>', unsafe_allow_html=True)
         else:
             st.warning(index_feedback.get("error", "Indexing failed."))
     st.markdown('</div>', unsafe_allow_html=True)
@@ -397,39 +460,52 @@ with hero_right:
 st.markdown("</section>", unsafe_allow_html=True)
 
 st.markdown('<section class="source-banner">', unsafe_allow_html=True)
-st.markdown('<div class="panel-title">Source Ingestion · AP News</div>', unsafe_allow_html=True)
-banner_left, banner_middle, banner_right = st.columns([1.2, 1.6, 1.2], gap="large")
+st.markdown('<div class="panel-title">Source Ingestion · AP News + BBC</div>', unsafe_allow_html=True)
+banner_left, banner_middle, banner_right = st.columns([0.5, 3.2, 0.5], gap="large")
 with banner_middle:
+    ap_col, bbc_col = st.columns(2, gap="large")
+
+with ap_col:
     st.markdown(
         (
             '<div class="source-card">'
             '<div style="font-size:1.35rem;">📰</div>'
             '<div class="source-card-label">AP News</div>'
-            '<div class="source-card-url">https://apnews.com/</div>'
+            '<div class="source-card-url">Date-based archive discovery</div>'
             "</div>"
         ),
         unsafe_allow_html=True,
     )
 
-    query_clicked = st.button("Query Site Article Count", use_container_width=True)
+    ap_query_date_col, ap_query_button_col = st.columns([1.25, 1], gap="small")
+    with ap_query_date_col:
+        st.text_input(
+            "Date (MM/DD/YYYY)",
+            key="ap_selected_date",
+            label_visibility="collapsed",
+            placeholder="MM/DD/YYYY",
+        )
+    with ap_query_button_col:
+        query_clicked = st.button("Query Site Article Count", use_container_width=True, key="ap_query_btn")
+
     scrape_clicked = st.button("Data Scrape", use_container_width=True)
 
     if query_clicked:
-        with st.spinner("Querying AP News homepage links..."):
-            st.session_state.ap_query_result = run_article_count_query(
-                homepage_url=AP_NEWS_URL,
-                max_links=220,
+        with st.spinner("Querying AP News archive metadata for selected date..."):
+            st.session_state.ap_query_result = run_article_count_query_by_date(
+                source_name="ap",
+                date_str=st.session_state.ap_selected_date,
+                max_links=250,
             )
 
     if scrape_clicked:
         latest_query = st.session_state.ap_query_result if st.session_state.ap_query_result.get("ok") == "true" else {}
         requested_scrape_count = int(latest_query.get("links_found", 0)) or AP_SCRAPE_FALLBACK_MAX_ARTICLES
-        with st.spinner("Running AP News data scrape..."):
-            st.session_state.analysis_result = run_pipeline(
-                AP_NEWS_URL,
-                requested_scrape_count,
-                keyword="",
-                keyword_filter_enabled=False,
+        with st.spinner("Running AP News date-based data scrape..."):
+            st.session_state.analysis_result = run_pipeline_by_date(
+                source_name="ap",
+                date_str=st.session_state.ap_selected_date,
+                max_articles=requested_scrape_count,
             )
         result_ok = st.session_state.analysis_result.get("ok") == "true"
         if result_ok:
@@ -470,6 +546,10 @@ with banner_middle:
             ),
             unsafe_allow_html=True,
         )
+    st.markdown(
+        f'<div class="small">Selected date: <strong>{st.session_state.ap_selected_date}</strong></div>',
+        unsafe_allow_html=True,
+    )
 
     scraped_local_count = _count_locally_scraped_ap_articles()
     discovered_count = query_result.get("links_found", 0) if query_result else 0
@@ -478,6 +558,131 @@ with banner_middle:
             '<div class="small">AP corpus status · '
             f"Discovered (latest query): <strong>{discovered_count}</strong> · "
             f"Scraped locally: <strong>{scraped_local_count}</strong></div>"
+        ),
+        unsafe_allow_html=True,
+    )
+
+with bbc_col:
+    st.markdown(
+        (
+            '<div class="source-card">'
+            '<div style="font-size:1.35rem;">🌐</div>'
+            '<div class="source-card-label">BBC</div>'
+            '<div class="source-card-url">Date-based archive discovery</div>'
+            "</div>"
+        ),
+        unsafe_allow_html=True,
+    )
+
+    bbc_query_date_col, bbc_query_button_col = st.columns([1.25, 1], gap="small")
+    with bbc_query_date_col:
+        st.text_input(
+            "Date (MM/DD/YYYY)",
+            key="bbc_selected_date",
+            label_visibility="collapsed",
+            placeholder="MM/DD/YYYY",
+        )
+    with bbc_query_button_col:
+        bbc_query_clicked = st.button(
+            "Query Site Article Count",
+            key="bbc_query_site_article_count",
+            use_container_width=True,
+        )
+
+    bbc_scrape_clicked = st.button(
+        "Data Scrape",
+        key="bbc_data_scrape",
+        use_container_width=True,
+    )
+
+    if bbc_query_clicked:
+        with st.spinner("Querying BBC archive metadata for selected date..."):
+            st.session_state.bbc_query_result = run_article_count_query_by_date(
+                source_name="bbc",
+                date_str=st.session_state.bbc_selected_date,
+                max_links=250,
+            )
+
+    if bbc_scrape_clicked:
+        latest_bbc_query = (
+            st.session_state.bbc_query_result if st.session_state.bbc_query_result.get("ok") == "true" else {}
+        )
+        requested_bbc_scrape_count = (
+            int(latest_bbc_query.get("links_found", 0)) or BBC_SCRAPE_FALLBACK_MAX_ARTICLES
+        )
+        with st.spinner("Running BBC date-based data scrape..."):
+            bbc_result = run_pipeline_by_date(
+                source_name="bbc",
+                date_str=st.session_state.bbc_selected_date,
+                max_articles=requested_bbc_scrape_count,
+            )
+            st.session_state.analysis_result = bbc_result
+
+        bbc_ok = bbc_result.get("ok") == "true"
+        if bbc_ok:
+            bbc_scraped = bbc_result.get("articles_scraped", 0)
+            bbc_attempted = bbc_result.get("articles_attempted", 0)
+            st.session_state.bbc_scrape_feedback = (
+                "BBC scrape complete. "
+                f"Requested: {requested_bbc_scrape_count} · Attempted: {bbc_attempted} · Scraped: {bbc_scraped}."
+            )
+        else:
+            st.session_state.bbc_scrape_feedback = _format_bbc_user_error(
+                bbc_result.get("error", "BBC scrape failed.")
+            )
+
+    bbc_query_result = st.session_state.bbc_query_result
+    if bbc_query_result:
+        if bbc_query_result.get("ok") == "true":
+            st.markdown(
+                (
+                    '<div class="small">Discovery complete · Candidate BBC article links: '
+                    f"<strong>{bbc_query_result.get('links_found', 0)}</strong></div>"
+                ),
+                unsafe_allow_html=True,
+            )
+            bbc_preview = bbc_query_result.get("preview", [])
+            if bbc_preview:
+                st.markdown('<div class="small">Preview:</div>', unsafe_allow_html=True)
+                for item in bbc_preview[:5]:
+                    st.markdown(f"- [{item.get('title', item.get('url', ''))}]({item.get('url', '')})")
+        else:
+            st.warning(_format_bbc_user_error(bbc_query_result.get("error", "BBC count query failed.")))
+
+    bbc_query_diagnostics = bbc_query_result.get("diagnostics", []) if bbc_query_result else []
+    if bbc_query_diagnostics:
+        st.markdown(
+            f'<div class="small">Diagnostics: {" · ".join(bbc_query_diagnostics[:3])}</div>',
+            unsafe_allow_html=True,
+        )
+
+    latest_bbc_pipeline = st.session_state.analysis_result if st.session_state.analysis_result else {}
+    if latest_bbc_pipeline.get("fetch_diagnostics") and latest_bbc_pipeline.get("ok") == "true":
+        diagnostics_text = " · ".join(latest_bbc_pipeline.get("fetch_diagnostics", [])[:3])
+        st.markdown(f'<div class="small">Scrape diagnostics: {diagnostics_text}</div>', unsafe_allow_html=True)
+
+    if st.session_state.bbc_scrape_feedback:
+        st.markdown(f'<div class="small">{st.session_state.bbc_scrape_feedback}</div>', unsafe_allow_html=True)
+    elif bbc_query_result and bbc_query_result.get("ok") == "true":
+        st.markdown(
+            (
+                '<div class="small">Data Scrape will target the latest discovered count: '
+                f"<strong>{bbc_query_result.get('links_found', 0)}</strong> candidate links.</div>"
+            ),
+            unsafe_allow_html=True,
+        )
+    st.markdown(
+        f'<div class="small">Selected date: <strong>{st.session_state.bbc_selected_date}</strong></div>',
+        unsafe_allow_html=True,
+    )
+
+    bbc_scraped_local_count = _count_locally_scraped_bbc_articles()
+    bbc_discovered_count = bbc_query_result.get("links_found", 0) if bbc_query_result else 0
+    st.markdown(
+        (
+            '<div class="small">BBC corpus status · '
+            f"Discovered (latest query): <strong>{bbc_discovered_count}</strong> · "
+            f"Scraped locally: <strong>{bbc_scraped_local_count}</strong></div>"
         ),
         unsafe_allow_html=True,
     )
@@ -500,7 +705,7 @@ def render_prophet_dashboard() -> None:
         ask_clicked = st.button("Ask The Prophet", use_container_width=True)
 
         result = st.session_state.analysis_result
-        index_status = get_indexing_status()
+        index_status = get_indexing_status(embedding_model=st.session_state.selected_embedding_model)
         model_discovery = st.session_state.ollama_model_discovery or {}
         st.markdown(
             (
@@ -521,6 +726,21 @@ def render_prophet_dashboard() -> None:
             ),
             unsafe_allow_html=True,
         )
+        st.markdown(
+            (
+                '<div class="small">Active model index root: '
+                f"<strong>{index_status.get('active_model_index_root', 'N/A')}</strong></div>"
+            ),
+            unsafe_allow_html=True,
+        )
+        source_counts = index_status.get("indexed_counts_by_source", {}) or {}
+        if source_counts:
+            st.markdown(
+                '<div class="small">Indexed by source (active model): '
+                + " · ".join(f"{source}: {count}" for source, count in sorted(source_counts.items()))
+                + "</div>",
+                unsafe_allow_html=True,
+            )
         if not model_discovery.get("available") and model_discovery.get("error"):
             st.warning(model_discovery.get("error"))
         if ask_clicked:
