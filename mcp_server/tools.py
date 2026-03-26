@@ -8,6 +8,7 @@ import re
 from collections import Counter
 from html import unescape
 from html.parser import HTMLParser
+from threading import Event
 from urllib.parse import urljoin, urlparse, urlunparse
 import xml.etree.ElementTree as ET
 
@@ -30,28 +31,13 @@ _BASE_STOPWORDS = {
     "yourselves", "will", "also", "says", "say", "get", "got", "like", "one", "two", "new",
 }
 
-_MONTH_STOPWORDS = {
-    "january", "february", "march", "april", "may", "june",
-    "july", "august", "september", "october", "november", "december",
-    "jan", "feb", "mar", "apr", "jun", "jul", "aug", "sep", "sept", "oct", "nov", "dec",
-}
+_STOPWORDS = _BASE_STOPWORDS
 
-_DAY_STOPWORDS = {
-    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
-    "mon", "tue", "tues", "wed", "thu", "thur", "thurs", "fri", "sat", "sun",
-    "today", "tomorrow", "yesterday",
-}
-
-_DATE_AND_FORMAT_STOPWORDS = {
-    "photo", "photos", "photograph", "file", "files", "ap", "news", "said",
-    "copyright", "published", "updated", "newsletter", "breaking", "read", "story",
-}
-
-_STOPWORDS = (
-    _BASE_STOPWORDS
-    | _MONTH_STOPWORDS
-    | _DAY_STOPWORDS
-    | _DATE_AND_FORMAT_STOPWORDS
+# Keep this list intentionally tiny: only obvious wire/photo boilerplate markers.
+_JUNK_PHRASE_PATTERNS = (
+    r"\bap\s+photo\b",
+    r"\bap\s+file\b",
+    r"\bfile\s+photo\b",
 )
 
 REUTERS_DISCOVERY_PATHS = (
@@ -130,6 +116,11 @@ BBC_ENGLISH_NEWS_PATH_PREFIXES = (
     "/news",
     "/newsround",
 )
+
+_SCRAPE_CANCEL_EVENTS: dict[str, Event] = {
+    "ap": Event(),
+    "bbc": Event(),
+}
 
 
 class ArticleLinkParser(HTMLParser):
@@ -641,9 +632,35 @@ def _tokenize(text: str) -> list[str]:
     return re.findall(r"[a-zA-Z]{3,}", text.lower())
 
 
+def _remove_junk_wire_photo_phrases(text: str) -> str:
+    cleaned = text
+    for pattern in _JUNK_PHRASE_PATTERNS:
+        cleaned = re.sub(pattern, " ", cleaned, flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
 def _filter_tokens(text: str) -> list[str]:
     """Tokenize and remove low-value words before frequency calculations."""
-    return [token for token in _tokenize(text) if token not in _STOPWORDS]
+    normalized = _remove_junk_wire_photo_phrases(text)
+    return [token for token in _tokenize(normalized) if token not in _STOPWORDS]
+
+
+def request_scrape_stop(source_name: str) -> bool:
+    source_key = source_name.strip().lower()
+    event = _SCRAPE_CANCEL_EVENTS.get(source_key)
+    if event is None:
+        return False
+    event.set()
+    return True
+
+
+def clear_scrape_stop(source_name: str) -> bool:
+    source_key = source_name.strip().lower()
+    event = _SCRAPE_CANCEL_EVENTS.get(source_key)
+    if event is None:
+        return False
+    event.clear()
+    return True
 
 
 def _split_sentences(text: str) -> list[str]:
@@ -1137,6 +1154,8 @@ def scrape_source_articles_by_date(
         raise ValueError(f"Unsupported source '{source_name}'. Expected one of: {', '.join(SOURCE_DATE_CONFIG)}")
 
     query_date = _parse_mmddyyyy(date_str)
+    clear_scrape_stop(source_key)
+    cancel_event = _SCRAPE_CANCEL_EVENTS[source_key]
     scrape_started_at = datetime.now(timezone.utc)
     ensure_data_directories()
     links, diagnostics, discovery_index = _discover_articles_by_date(
@@ -1165,8 +1184,13 @@ def scrape_source_articles_by_date(
     manifest_path = ""
     word_totals: Counter[str] = Counter()
     article_frequency: Counter[str] = Counter()
+    stopped_by_user = False
 
     for link in links:
+        if cancel_event.is_set():
+            stopped_by_user = True
+            diagnostics.append(f"scrape_stopped_by_user:{source_key}")
+            break
         if attempted_articles >= max_articles:
             break
         attempted_articles += 1
@@ -1221,8 +1245,8 @@ def scrape_source_articles_by_date(
                         published_source = "query_date_fallback"
                     break
             if not published_at:
-                published_at = datetime.now(timezone.utc).isoformat()
-                published_source = "scrape_timestamp_fallback"
+                published_at = query_date.replace(tzinfo=timezone.utc).isoformat()
+                published_source = "query_date_fallback"
             diagnostics.append(f"storage_date_source:{published_source}:{link['url']}")
 
             persist_result = persist_article_if_new(
@@ -1319,6 +1343,7 @@ def scrape_source_articles_by_date(
         "article_manifest_path": manifest_path,
         "fetch_diagnostics": diagnostics[:40],
         "discovery_index": discovery_index,
+        "scrape_stopped_by_user": stopped_by_user,
     }
 
     run_index_path = write_run_index(

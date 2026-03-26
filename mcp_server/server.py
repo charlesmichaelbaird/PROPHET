@@ -6,6 +6,7 @@ from mcp_server.rag import ingest_new_articles
 from mcp_server.tools import (
     analyze_homepage,
     ask_the_prophet,
+    request_scrape_stop,
     query_site_article_count,
     query_source_article_count_by_date,
     scrape_source_articles_by_date,
@@ -175,6 +176,14 @@ def run_pipeline_by_date(source_name: str, date_str: str, max_articles: int = 20
         }
 
 
+def run_stop_pipeline_by_date(source_name: str) -> dict:
+    """Signal a running date-based scrape loop to stop gracefully."""
+    stopped = request_scrape_stop(source_name=source_name)
+    if not stopped:
+        return {"ok": "false", "error": f"Unsupported source '{source_name}'."}
+    return {"ok": "true", "error": "", "message": "Stop requested."}
+
+
 TOOLS = {
     "analyze_homepage": analyze_homepage,
     "run_pipeline": run_pipeline,
@@ -183,4 +192,5 @@ TOOLS = {
     "run_ask_the_prophet": run_ask_the_prophet,
     "run_index_data": run_index_data,
     "run_pipeline_by_date": run_pipeline_by_date,
+    "run_stop_pipeline_by_date": run_stop_pipeline_by_date,
 }

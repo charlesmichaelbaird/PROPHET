@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from mcp_server.tools import extract_article_text
+from mcp_server.tools import _filter_tokens, extract_article_text
 
 
 class TestArticleTextCleanup(unittest.TestCase):
@@ -31,6 +31,14 @@ class TestArticleTextCleanup(unittest.TestCase):
         text = extract_article_text(html)
 
         self.assertEqual(text, "Residents were evacuated safely.")
+
+    def test_word_filter_keeps_normal_terms_but_removes_wire_boilerplate(self) -> None:
+        text = "March policy update included AP Photo credit and file photo references."
+        tokens = _filter_tokens(text)
+        self.assertIn("march", tokens)
+        self.assertIn("policy", tokens)
+        self.assertNotIn("photo", tokens)
+        self.assertNotIn("file", tokens)
 
 
 if __name__ == "__main__":
