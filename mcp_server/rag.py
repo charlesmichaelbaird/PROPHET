@@ -16,8 +16,8 @@ import requests
 from mcp_server.storage import ensure_data_directories, load_article_index
 
 DEFAULT_OLLAMA_BASE_URL = os.getenv("PROPHET_OLLAMA_HOST", "http://localhost:11434")
-DEFAULT_OLLAMA_EMBED_MODEL = os.getenv("PROPHET_OLLAMA_EMBED_MODEL", "nomic-embed-text")
-DEFAULT_OLLAMA_CHAT_MODEL = os.getenv("PROPHET_OLLAMA_MODEL", "llama3.1")
+DEFAULT_OLLAMA_EMBED_MODEL = os.getenv("PROPHET_OLLAMA_EMBED_MODEL", "").strip()
+DEFAULT_OLLAMA_CHAT_MODEL = os.getenv("PROPHET_OLLAMA_MODEL", "").strip()
 DEFAULT_OLLAMA_TIMEOUT_SECONDS = float(os.getenv("PROPHET_OLLAMA_TIMEOUT_SECONDS", "60"))
 DEFAULT_VECTOR_INDEX_PATH = Path(
     os.getenv("PROPHET_VECTOR_INDEX_PATH", str(Path(__file__).resolve().parents[1] / "data" / "index" / "vector_store.sqlite"))
@@ -39,6 +39,52 @@ class RetrievalChunk:
     content_hash: str
 
 
+def _base_model_name(model_name: str) -> str:
+    cleaned = str(model_name).strip()
+    if ":" in cleaned:
+        return cleaned.split(":", 1)[0].strip()
+    return cleaned
+
+
+def discover_ollama_models(base_url: str = DEFAULT_OLLAMA_BASE_URL, timeout_seconds: float = DEFAULT_OLLAMA_TIMEOUT_SECONDS) -> dict[str, Any]:
+    """Discover locally installed Ollama models and derive role-friendly candidate lists."""
+    normalized_url = base_url.rstrip("/")
+    try:
+        response = requests.get(f"{normalized_url}/api/tags", timeout=timeout_seconds)
+        response.raise_for_status()
+        payload = response.json()
+        raw_models = payload.get("models", [])
+    except Exception as exc:
+        return {
+            "available": False,
+            "host": normalized_url,
+            "models": [],
+            "embedding_candidates": [],
+            "answer_candidates": [],
+            "error": f"Ollama runtime unavailable at {normalized_url}: {exc}",
+        }
+
+    discovered: list[str] = []
+    for row in raw_models:
+        name = _base_model_name(str(row.get("name", "")))
+        if name and name not in discovered:
+            discovered.append(name)
+
+    embedding_candidates = [
+        name for name in discovered if any(marker in name.lower() for marker in ("embed", "nomic", "mxbai", "e5", "bge"))
+    ]
+    answer_candidates = [name for name in discovered if name not in embedding_candidates]
+
+    return {
+        "available": True,
+        "host": normalized_url,
+        "models": discovered,
+        "embedding_candidates": embedding_candidates,
+        "answer_candidates": answer_candidates or discovered,
+        "error": "",
+    }
+
+
 class OllamaClient:
     def __init__(
         self,
@@ -48,14 +94,18 @@ class OllamaClient:
         timeout_seconds: float = DEFAULT_OLLAMA_TIMEOUT_SECONDS,
     ) -> None:
         self.base_url = base_url.rstrip("/")
-        self.embed_model = embed_model
-        self.chat_model = chat_model
+        self.embed_model = embed_model.strip()
+        self.chat_model = chat_model.strip()
         self.timeout_seconds = timeout_seconds
         self.embedding_mode = "unknown"
 
     def embed(self, text: str) -> list[float]:
         """Embed text using native Ollama /api/embed endpoint."""
         candidate_models = self._candidate_embedding_models()
+        if not candidate_models:
+            raise RuntimeError(
+                "No embedding model could be resolved. Choose a valid embedding model from local Ollama discovery."
+            )
         last_error = ""
         for model_name in candidate_models:
             try:
@@ -70,11 +120,16 @@ class OllamaClient:
         )
 
     def _candidate_embedding_models(self) -> list[str]:
-        configured = [self.embed_model]
         discovered = self._discover_installed_models()
+        if self.embed_model:
+            if discovered and self.embed_model not in discovered:
+                raise RuntimeError(
+                    f"Selected embedding model '{self.embed_model}' is not installed in local Ollama."
+                )
+            return [self.embed_model]
+
         embed_like = [name for name in discovered if any(marker in name.lower() for marker in ("embed", "nomic", "mxbai"))]
-        fallback = [self.chat_model]
-        all_names = configured + embed_like + discovered + fallback
+        all_names = embed_like + discovered
         deduped: list[str] = []
         for name in all_names:
             clean = str(name).strip()
@@ -83,14 +138,8 @@ class OllamaClient:
         return deduped
 
     def _discover_installed_models(self) -> list[str]:
-        try:
-            response = requests.get(f"{self.base_url}/api/tags", timeout=self.timeout_seconds)
-            response.raise_for_status()
-            models = response.json().get("models", [])
-            names = [str(model.get("name", "")).strip() for model in models if model.get("name")]
-            return [name for name in names if name]
-        except Exception:
-            return []
+        discovered = discover_ollama_models(base_url=self.base_url, timeout_seconds=self.timeout_seconds)
+        return discovered.get("models", [])
 
     def _embed_with_model(self, text: str, model_name: str) -> list[float]:
         return self._request_embedding_vector(model_name=model_name, text=text)
@@ -143,6 +192,17 @@ class OllamaClient:
         )
 
     def chat(self, question: str, chunks: list[RetrievalChunk]) -> str:
+        discovered = self._discover_installed_models()
+        requested_chat_model = self.chat_model
+        if not requested_chat_model and discovered:
+            requested_chat_model = discovered[0]
+        if not requested_chat_model:
+            raise RuntimeError("No answer model is selected and no local Ollama models were discovered.")
+        if discovered and requested_chat_model not in discovered:
+            raise RuntimeError(
+                f"Selected answer model '{requested_chat_model}' is not installed in local Ollama."
+            )
+
         context_lines: list[str] = []
         for idx, chunk in enumerate(chunks, start=1):
             context_lines.append(
@@ -164,7 +224,7 @@ class OllamaClient:
         response = requests.post(
             f"{self.base_url}/api/chat",
             json={
-                "model": self.chat_model,
+                "model": requested_chat_model,
                 "stream": False,
                 "messages": [
                     {"role": "system", "content": system_prompt},
@@ -173,7 +233,12 @@ class OllamaClient:
             },
             timeout=self.timeout_seconds,
         )
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except requests.exceptions.HTTPError as exc:
+            raise RuntimeError(
+                f"Selected answer model '{requested_chat_model}' could not serve chat/generation: {exc}"
+            ) from exc
         payload = response.json()
         message = payload.get("message", {})
         return str(message.get("content", "")).strip()
@@ -353,10 +418,12 @@ def ingest_new_articles(
     manifest_path: Path = DEFAULT_VECTOR_MANIFEST_PATH,
     data_root: Path | None = None,
     progress_callback: Any | None = None,
+    embedding_model: str = "",
+    answer_model: str = "",
 ) -> dict[str, Any]:
     """Index missing scraped articles from flat-file corpus into persistent local vector index."""
     ensure_data_directories(data_root=data_root)
-    client = client or OllamaClient()
+    client = client or OllamaClient(embed_model=embedding_model, chat_model=answer_model)
     index = index or LocalVectorIndex()
 
     missing_hashes = get_indexing_status(
@@ -568,6 +635,8 @@ def index_missing_articles(
     final_manifest_path = _save_vector_manifest(vector_manifest, manifest_path)
     stats = index.stats()
     sync_status = get_indexing_status(index=index, manifest_path=manifest_path, data_root=data_root)
+    selected_embedding_model = getattr(client, "embed_model", "")
+    selected_answer_model = getattr(client, "chat_model", "")
 
     return {
         "new_articles_indexed": newly_indexed_articles,
@@ -584,6 +653,8 @@ def index_missing_articles(
         "processed_scan_directory": str(processed_root),
         "vector_manifest_path": final_manifest_path,
         "vector_index_path": str(index.db_path),
+        "selected_embedding_model": selected_embedding_model,
+        "selected_answer_model": selected_answer_model,
     }
 
 
@@ -592,16 +663,20 @@ def answer_question(
     top_k: int = 5,
     client: OllamaClient | None = None,
     index: LocalVectorIndex | None = None,
+    embedding_model: str = "",
+    answer_model: str = "",
 ) -> dict[str, Any]:
     cleaned_question = question.strip()
     if not cleaned_question:
         return {"ok": "false", "error": "Please enter a question first.", "answer": "", "citations": []}
 
-    client = client or OllamaClient()
+    client = client or OllamaClient(embed_model=embedding_model, chat_model=answer_model)
     index = index or LocalVectorIndex()
     verification = get_indexing_status(index=index)
     indexing_triggered = False
     indexing_result: dict[str, Any] = {}
+    selected_embedding_model = getattr(client, "embed_model", embedding_model)
+    selected_answer_model = getattr(client, "chat_model", answer_model)
     if verification["missing_articles_total"] > 0:
         return {
             "ok": "true",
@@ -617,6 +692,8 @@ def answer_question(
             "indexing_triggered": False,
             "indexing_result": {},
             "embedding_mode": client.embedding_mode,
+            "selected_embedding_model": selected_embedding_model,
+            "selected_answer_model": selected_answer_model,
         }
 
     query_vector = client.embed(cleaned_question)
@@ -633,6 +710,8 @@ def answer_question(
             "indexing_triggered": indexing_triggered,
             "indexing_result": indexing_result,
             "embedding_mode": client.embedding_mode,
+            "selected_embedding_model": selected_embedding_model,
+            "selected_answer_model": selected_answer_model,
         }
 
     best_score = retrieved[0].score
@@ -648,6 +727,8 @@ def answer_question(
             "indexing_triggered": indexing_triggered,
             "indexing_result": indexing_result,
             "embedding_mode": client.embedding_mode,
+            "selected_embedding_model": selected_embedding_model,
+            "selected_answer_model": selected_answer_model,
         }
 
     answer = client.chat(cleaned_question, retrieved)
@@ -676,4 +757,6 @@ def answer_question(
         "indexing_triggered": indexing_triggered,
         "indexing_result": indexing_result,
         "embedding_mode": client.embedding_mode,
+        "selected_embedding_model": selected_embedding_model,
+        "selected_answer_model": selected_answer_model,
     }
