@@ -21,6 +21,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from mcp_server.server import run_ask_the_prophet, run_pipeline
+from mcp_server.rag import get_indexing_status, ingest_new_articles
 from frontend.btc_data import fetch_btc_history, fetch_spot_btc_price
 
 st.set_page_config(
@@ -98,6 +99,14 @@ if "ask_prophet_citations" not in st.session_state:
     st.session_state.ask_prophet_citations = []
 if "ask_prophet_engine" not in st.session_state:
     st.session_state.ask_prophet_engine = ""
+if "ask_prophet_indexing_triggered" not in st.session_state:
+    st.session_state.ask_prophet_indexing_triggered = False
+if "ask_prophet_index_verification" not in st.session_state:
+    st.session_state.ask_prophet_index_verification = {}
+if "ask_prophet_embedding_mode" not in st.session_state:
+    st.session_state.ask_prophet_embedding_mode = ""
+if "index_data_feedback" not in st.session_state:
+    st.session_state.index_data_feedback = {}
 if "ollama_process" not in st.session_state:
     st.session_state.ollama_process = None
 if "ollama_managed_by_ui" not in st.session_state:
@@ -255,7 +264,8 @@ def render_prophet_dashboard() -> None:
         keyword_filter_enabled = st.checkbox("Enable keyword filtering", value=False)
         keyword = st.text_input("Keyword (article-level match)", value="")
 
-        run_clicked = st.button("Run Zero-Cost Analysis", use_container_width=True)
+        run_clicked = st.button("Data Scrape", use_container_width=True)
+        index_clicked = st.button("Index Data", use_container_width=True)
         clear_clicked = st.button("Reset Results", use_container_width=True)
 
         if clear_clicked:
@@ -269,6 +279,83 @@ def render_prophet_dashboard() -> None:
                     keyword=keyword.strip(),
                     keyword_filter_enabled=keyword_filter_enabled,
                 )
+        if index_clicked:
+            progress_header = st.empty()
+            progress_meta = st.empty()
+            progress_step = st.empty()
+            progress_bar = st.progress(0.0)
+            progress_header.markdown('<div class="small">Indexing started…</div>', unsafe_allow_html=True)
+
+            progress_state = {
+                "eligible_for_indexing": 0,
+                "already_indexed": 0,
+                "total_discovered": 0,
+                "indexed_so_far": 0,
+            }
+
+            def _on_progress(event: dict) -> None:
+                if event.get("event") == "scan":
+                    progress_state["eligible_for_indexing"] = int(event.get("eligible_for_indexing", 0))
+                    progress_state["already_indexed"] = int(event.get("already_indexed", 0))
+                    progress_state["total_discovered"] = int(event.get("total_discovered", 0))
+                    progress_meta.markdown(
+                        (
+                            '<div class="small">Scanning processed corpus only: '
+                            f"<strong>{event.get('processed_scan_directory', '')}</strong><br/>"
+                            f"Discovered: <strong>{progress_state['total_discovered']}</strong> · "
+                            f"Eligible: <strong>{progress_state['eligible_for_indexing']}</strong> · "
+                            f"Already indexed/skipped: <strong>{progress_state['already_indexed']}</strong> · "
+                            f"Remaining: <strong>{event.get('remaining', 0)}</strong></div>"
+                        ),
+                        unsafe_allow_html=True,
+                    )
+                    progress_bar.progress(0.0 if progress_state["eligible_for_indexing"] else 1.0)
+                elif event.get("event") == "step":
+                    title = event.get("title", "Untitled")
+                    step = event.get("step", "")
+                    pos = event.get("article_position", 0)
+                    total = event.get("total_to_index", 0)
+                    progress_step.markdown(
+                        f'<div class="small">[{pos}/{total}] {title} · {step}</div>',
+                        unsafe_allow_html=True,
+                    )
+                elif event.get("event") == "article_done":
+                    indexed_so_far = int(event.get("indexed_so_far", 0))
+                    total = int(event.get("total_to_index", 0))
+                    progress_state["indexed_so_far"] = indexed_so_far
+                    fraction = (indexed_so_far / total) if total else 1.0
+                    progress_bar.progress(min(max(fraction, 0.0), 1.0))
+                    progress_header.markdown(
+                        f'<div class="small">Indexing progress: <strong>{indexed_so_far} / {total}</strong> articles indexed</div>',
+                        unsafe_allow_html=True,
+                    )
+
+            with st.spinner("Indexing saved local corpus from /data ..."):
+                st.session_state.index_data_feedback = ingest_new_articles(progress_callback=_on_progress)
+
+        index_feedback = st.session_state.index_data_feedback
+        if index_feedback:
+            if not index_feedback.get("error"):
+                inspected = index_feedback.get("total_discovered", index_feedback.get("processed_articles_total", 0))
+                new_articles = index_feedback.get("new_articles_indexed", 0)
+                already_indexed = index_feedback.get(
+                    "already_indexed_articles",
+                    max(int(inspected) - int(new_articles), 0),
+                )
+                new_chunks = index_feedback.get("new_chunks_indexed", 0)
+                st.markdown(
+                    (
+                        '<div class="small">Index run complete · '
+                        f"Processed scan dir: <strong>{index_feedback.get('processed_scan_directory', 'data/processed')}</strong> · "
+                        f"Inspected: <strong>{inspected}</strong> · "
+                        f"Newly indexed articles: <strong>{new_articles}</strong> · "
+                        f"Already indexed/skipped: <strong>{already_indexed}</strong> · "
+                        f"New chunks: <strong>{new_chunks}</strong></div>"
+                    ),
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.warning(index_feedback.get("error", "Indexing failed."))
 
         st.markdown('</div>', unsafe_allow_html=True)
 
@@ -281,12 +368,25 @@ def render_prophet_dashboard() -> None:
         ask_clicked = st.button("Ask The Prophet", use_container_width=True)
 
         result = st.session_state.analysis_result
+        index_status = get_indexing_status()
+        st.markdown(
+            (
+                '<div class="small">Local runtime: Ollama + SQLite index · '
+                f"Processed articles: <strong>{index_status.get('processed_articles_total', 0)}</strong> · "
+                f"Indexed articles: <strong>{index_status.get('indexed_articles_total', 0)}</strong> · "
+                f"Up to date: <strong>{'Yes' if index_status.get('is_index_up_to_date') else 'No'}</strong></div>"
+            ),
+            unsafe_allow_html=True,
+        )
         if ask_clicked:
             if not result or result.get("ok") == "false":
                 st.session_state.ask_prophet_error = "Run a scrape analysis first so Prophet has evidence to search."
                 st.session_state.ask_prophet_answer = ""
                 st.session_state.ask_prophet_citations = []
                 st.session_state.ask_prophet_engine = ""
+                st.session_state.ask_prophet_indexing_triggered = False
+                st.session_state.ask_prophet_index_verification = {}
+                st.session_state.ask_prophet_embedding_mode = ""
             else:
                 ask_result = run_ask_the_prophet(
                     question=ask_question,
@@ -296,6 +396,9 @@ def render_prophet_dashboard() -> None:
                 st.session_state.ask_prophet_answer = ask_result.get("answer", "")
                 st.session_state.ask_prophet_citations = ask_result.get("citations", [])
                 st.session_state.ask_prophet_engine = ask_result.get("engine", "")
+                st.session_state.ask_prophet_indexing_triggered = bool(ask_result.get("indexing_triggered"))
+                st.session_state.ask_prophet_index_verification = ask_result.get("index_verification", {})
+                st.session_state.ask_prophet_embedding_mode = ask_result.get("embedding_mode", "")
 
         if st.session_state.ask_prophet_error:
             st.warning(st.session_state.ask_prophet_error)
@@ -305,9 +408,20 @@ def render_prophet_dashboard() -> None:
             engine = st.session_state.ask_prophet_engine
             if engine == "fallback":
                 st.markdown('<div class="small">Engine: Extractive fallback (no local model runtime detected)</div>', unsafe_allow_html=True)
-            elif engine == "ollama":
-                st.markdown('<div class="small">Engine: Local Ollama model</div>', unsafe_allow_html=True)
+            elif engine in {"ollama", "ollama-rag"}:
+                st.markdown('<div class="small">Engine: Local Ollama + persistent local retrieval index</div>', unsafe_allow_html=True)
             st.markdown(st.session_state.ask_prophet_answer)
+            embedding_mode = st.session_state.ask_prophet_embedding_mode
+            if embedding_mode:
+                st.markdown(
+                    f'<div class="small">Embedding API mode: <strong>{embedding_mode}</strong></div>',
+                    unsafe_allow_html=True,
+                )
+            if st.session_state.ask_prophet_indexing_triggered:
+                st.markdown(
+                    '<div class="small">Pre-answer check: Missing corpus items were indexed before retrieval.</div>',
+                    unsafe_allow_html=True,
+                )
         else:
             st.markdown('<div class="small">Answer will appear here after you ask a question.</div>', unsafe_allow_html=True)
 
