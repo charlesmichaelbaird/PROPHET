@@ -51,6 +51,7 @@ class OllamaClient:
         self.embed_model = embed_model
         self.chat_model = chat_model
         self.timeout_seconds = timeout_seconds
+        self.embedding_mode = "unknown"
 
     def embed(self, text: str) -> list[float]:
         """Embed text using native Ollama /api/embed endpoint."""
@@ -92,21 +93,54 @@ class OllamaClient:
             return []
 
     def _embed_with_model(self, text: str, model_name: str) -> list[float]:
-        response = requests.post(
+        return self._request_embedding_vector(model_name=model_name, text=text)
+
+    def _request_embedding_vector(self, model_name: str, text: str) -> list[float]:
+        """
+        Request embeddings with defensive compatibility handling.
+
+        Preferred path:
+          1) POST /api/embed      body: {"model": "...", "input": ["..."]}
+        Legacy fallback:
+          2) POST /api/embeddings body: {"model": "...", "prompt": "..."}
+        """
+        current_error = ""
+        current_response = requests.post(
             f"{self.base_url}/api/embed",
             json={"model": model_name, "input": [text]},
             timeout=self.timeout_seconds,
         )
-        try:
-            response.raise_for_status()
-        except requests.exceptions.HTTPError as exc:
-            raise RuntimeError(f"model '{model_name}' failed on /api/embed: {exc}") from exc
+        if current_response.status_code == 200:
+            payload = current_response.json()
+            embeddings = payload.get("embeddings", [])
+            if embeddings:
+                self.embedding_mode = "current:/api/embed"
+                return [float(x) for x in embeddings[0]]
+            current_error = "current endpoint returned empty embeddings payload"
+        else:
+            current_error = f"current endpoint status={current_response.status_code}"
 
-        payload = response.json()
-        embeddings = payload.get("embeddings", [])
-        if not embeddings:
-            raise RuntimeError(f"model '{model_name}' returned no embeddings")
-        return [float(x) for x in embeddings[0]]
+        legacy_error = ""
+        legacy_response = requests.post(
+            f"{self.base_url}/api/embeddings",
+            json={"model": model_name, "prompt": text},
+            timeout=self.timeout_seconds,
+        )
+        if legacy_response.status_code == 200:
+            payload = legacy_response.json()
+            vector = payload.get("embedding", [])
+            if vector:
+                self.embedding_mode = "legacy:/api/embeddings"
+                return [float(x) for x in vector]
+            legacy_error = "legacy endpoint returned empty embedding payload"
+        else:
+            legacy_error = f"legacy endpoint status={legacy_response.status_code}"
+
+        raise RuntimeError(
+            f"model '{model_name}' embedding failed across endpoint variants; "
+            f"{current_error}; {legacy_error}. "
+            "This may indicate an Ollama version mismatch, missing model, or unavailable runtime."
+        )
 
     def chat(self, question: str, chunks: list[RetrievalChunk]) -> str:
         context_lines: list[str] = []
@@ -440,6 +474,7 @@ def index_missing_articles(
         "processed_articles_total": sync_status["processed_articles_total"],
         "missing_articles_total": sync_status["missing_articles_total"],
         "is_index_up_to_date": sync_status["is_index_up_to_date"],
+        "embedding_mode": client.embedding_mode,
         "vector_manifest_path": final_manifest_path,
         "vector_index_path": str(index.db_path),
     }
@@ -482,6 +517,7 @@ def answer_question(
             "index_verification": verification,
             "indexing_triggered": indexing_triggered,
             "indexing_result": indexing_result,
+            "embedding_mode": client.embedding_mode,
         }
 
     best_score = retrieved[0].score
@@ -496,6 +532,7 @@ def answer_question(
             "index_verification": verification,
             "indexing_triggered": indexing_triggered,
             "indexing_result": indexing_result,
+            "embedding_mode": client.embedding_mode,
         }
 
     answer = client.chat(cleaned_question, retrieved)
@@ -523,4 +560,5 @@ def answer_question(
         "index_verification": verification,
         "indexing_triggered": indexing_triggered,
         "indexing_result": indexing_result,
+        "embedding_mode": client.embedding_mode,
     }

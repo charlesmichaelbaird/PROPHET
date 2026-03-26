@@ -103,6 +103,8 @@ if "ask_prophet_indexing_triggered" not in st.session_state:
     st.session_state.ask_prophet_indexing_triggered = False
 if "ask_prophet_index_verification" not in st.session_state:
     st.session_state.ask_prophet_index_verification = {}
+if "ask_prophet_embedding_mode" not in st.session_state:
+    st.session_state.ask_prophet_embedding_mode = ""
 if "ollama_process" not in st.session_state:
     st.session_state.ollama_process = None
 if "ollama_managed_by_ui" not in st.session_state:
@@ -304,6 +306,7 @@ def render_prophet_dashboard() -> None:
                 st.session_state.ask_prophet_engine = ""
                 st.session_state.ask_prophet_indexing_triggered = False
                 st.session_state.ask_prophet_index_verification = {}
+                st.session_state.ask_prophet_embedding_mode = ""
             else:
                 ask_result = run_ask_the_prophet(
                     question=ask_question,
@@ -315,6 +318,7 @@ def render_prophet_dashboard() -> None:
                 st.session_state.ask_prophet_engine = ask_result.get("engine", "")
                 st.session_state.ask_prophet_indexing_triggered = bool(ask_result.get("indexing_triggered"))
                 st.session_state.ask_prophet_index_verification = ask_result.get("index_verification", {})
+                st.session_state.ask_prophet_embedding_mode = ask_result.get("embedding_mode", "")
 
         if st.session_state.ask_prophet_error:
             st.warning(st.session_state.ask_prophet_error)
@@ -327,6 +331,12 @@ def render_prophet_dashboard() -> None:
             elif engine in {"ollama", "ollama-rag"}:
                 st.markdown('<div class="small">Engine: Local Ollama + persistent local retrieval index</div>', unsafe_allow_html=True)
             st.markdown(st.session_state.ask_prophet_answer)
+            embedding_mode = st.session_state.ask_prophet_embedding_mode
+            if embedding_mode:
+                st.markdown(
+                    f'<div class="small">Embedding API mode: <strong>{embedding_mode}</strong></div>',
+                    unsafe_allow_html=True,
+                )
             if st.session_state.ask_prophet_indexing_triggered:
                 st.markdown(
                     '<div class="small">Pre-answer check: Missing corpus items were indexed before retrieval.</div>',

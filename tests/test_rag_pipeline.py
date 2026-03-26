@@ -20,6 +20,8 @@ from mcp_server.storage import persist_article_if_new
 
 
 class _FakeEmbedClient:
+    embedding_mode = "test-fake"
+
     def embed(self, text: str) -> list[float]:
         length = float(len(text.split()))
         ascii_signal = float(sum(ord(ch) for ch in text[:25]) % 997)
@@ -105,10 +107,32 @@ class TestRagPipeline(unittest.TestCase):
 
         with patch("mcp_server.rag.requests.get") as mock_get, patch("mcp_server.rag.requests.post") as mock_post:
             mock_get.return_value = tags_response
-            mock_post.side_effect = [fail_response, success_response]
+            mock_post.side_effect = [
+                fail_response,  # configured missing model on /api/embed
+                fail_response,  # configured missing model on legacy /api/embeddings
+                success_response,  # discovered embed model on /api/embed
+            ]
             vector = client.embed("fallback text")
 
         self.assertEqual(vector, [0.7, 0.8, 0.9])
+        self.assertEqual(client.embedding_mode, "current:/api/embed")
+
+    def test_embed_uses_legacy_variant_when_current_is_unavailable(self) -> None:
+        client = OllamaClient(base_url="http://localhost:11434", embed_model="nomic-embed-text")
+        tags_response = Mock(status_code=200)
+        tags_response.json.return_value = {"models": []}
+
+        current_missing = Mock(status_code=404)
+        legacy_success = Mock(status_code=200)
+        legacy_success.json.return_value = {"embedding": [0.11, 0.22, 0.33]}
+
+        with patch("mcp_server.rag.requests.get") as mock_get, patch("mcp_server.rag.requests.post") as mock_post:
+            mock_get.return_value = tags_response
+            mock_post.side_effect = [current_missing, legacy_success]
+            vector = client.embed("legacy path text")
+
+        self.assertEqual(vector, [0.11, 0.22, 0.33])
+        self.assertEqual(client.embedding_mode, "legacy:/api/embeddings")
 
     def test_status_and_index_missing_articles_workflow(self) -> None:
         with TemporaryDirectory() as tmp:
