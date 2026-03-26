@@ -352,6 +352,7 @@ def ingest_new_articles(
     index: LocalVectorIndex | None = None,
     manifest_path: Path = DEFAULT_VECTOR_MANIFEST_PATH,
     data_root: Path | None = None,
+    progress_callback: Any | None = None,
 ) -> dict[str, Any]:
     """Index missing scraped articles from flat-file corpus into persistent local vector index."""
     ensure_data_directories(data_root=data_root)
@@ -369,7 +370,29 @@ def ingest_new_articles(
         index=index,
         manifest_path=manifest_path,
         data_root=data_root,
+        progress_callback=progress_callback,
     )
+
+
+def _processed_article_entries(data_root: Path | None = None) -> tuple[dict[str, Any], Path]:
+    """Return manifest entries that point to valid processed clean-text files only."""
+    layout = ensure_data_directories(data_root=data_root)
+    processed_root = layout["processed"].resolve()
+    corpus_manifest = load_article_index(data_root=data_root)
+    corpus_entries: dict[str, Any] = corpus_manifest.get("entries", {})
+    filtered: dict[str, Any] = {}
+    for content_hash, entry in corpus_entries.items():
+        clean_text_path = Path(entry.get("file_paths", {}).get("clean_text_path", ""))
+        if not clean_text_path.exists():
+            continue
+        try:
+            resolved = clean_text_path.resolve()
+        except Exception:
+            continue
+        if processed_root not in resolved.parents:
+            continue
+        filtered[content_hash] = entry
+    return filtered, processed_root
 
 
 def get_indexing_status(
@@ -379,9 +402,7 @@ def get_indexing_status(
 ) -> dict[str, Any]:
     """Report corpus/index synchronization status without mutating index state."""
     _ = index or LocalVectorIndex()
-    ensure_data_directories(data_root=data_root)
-    corpus_manifest = load_article_index(data_root=data_root)
-    corpus_entries: dict[str, Any] = corpus_manifest.get("entries", {})
+    corpus_entries, processed_root = _processed_article_entries(data_root=data_root)
     vector_manifest = _load_vector_manifest(manifest_path)
     indexed_articles: dict[str, Any] = vector_manifest.get("articles", {})
 
@@ -395,6 +416,7 @@ def get_indexing_status(
         "is_index_up_to_date": len(missing_hashes) == 0,
         "missing_content_hashes": missing_hashes,
         "vector_manifest_path": str(manifest_path),
+        "processed_scan_directory": str(processed_root),
     }
 
 
@@ -404,21 +426,34 @@ def index_missing_articles(
     index: LocalVectorIndex | None = None,
     manifest_path: Path = DEFAULT_VECTOR_MANIFEST_PATH,
     data_root: Path | None = None,
+    progress_callback: Any | None = None,
 ) -> dict[str, Any]:
     """Incrementally index only the specified missing content hashes."""
     ensure_data_directories(data_root=data_root)
     client = client or OllamaClient()
     index = index or LocalVectorIndex()
 
-    article_manifest = load_article_index(data_root=data_root)
-    article_entries: dict[str, Any] = article_manifest.get("entries", {})
+    article_entries, processed_root = _processed_article_entries(data_root=data_root)
     vector_manifest = _load_vector_manifest(manifest_path)
     indexed_articles: dict[str, Any] = vector_manifest.get("articles", {})
 
     newly_indexed_articles = 0
     newly_indexed_chunks = 0
+    total_discovered = len(article_entries)
+    already_indexed = max(total_discovered - len(missing_content_hashes), 0)
+    if progress_callback:
+        progress_callback(
+            {
+                "event": "scan",
+                "processed_scan_directory": str(processed_root),
+                "total_discovered": total_discovered,
+                "eligible_for_indexing": len(missing_content_hashes),
+                "already_indexed": already_indexed,
+                "remaining": len(missing_content_hashes),
+            }
+        )
 
-    for content_hash in missing_content_hashes:
+    for article_pos, content_hash in enumerate(missing_content_hashes, start=1):
         entry = article_entries.get(content_hash, {})
         if not entry or content_hash in indexed_articles:
             continue
@@ -427,14 +462,49 @@ def index_missing_articles(
         clean_text_path = Path(file_paths.get("clean_text_path", ""))
         if not clean_text_path.exists():
             continue
+        if progress_callback:
+            progress_callback(
+                {
+                    "event": "step",
+                    "content_hash": content_hash,
+                    "article_position": article_pos,
+                    "total_to_index": len(missing_content_hashes),
+                    "step": "loading file",
+                    "title": str(entry.get("title", "")),
+                    "file_path": str(clean_text_path),
+                }
+            )
         text = clean_text_path.read_text(encoding="utf-8").strip()
         if not text:
             continue
 
+        if progress_callback:
+            progress_callback(
+                {
+                    "event": "step",
+                    "content_hash": content_hash,
+                    "article_position": article_pos,
+                    "total_to_index": len(missing_content_hashes),
+                    "step": "chunking text",
+                    "title": str(entry.get("title", "")),
+                }
+            )
         chunks = chunk_text(text)
         if not chunks:
             continue
 
+        if progress_callback:
+            progress_callback(
+                {
+                    "event": "step",
+                    "content_hash": content_hash,
+                    "article_position": article_pos,
+                    "total_to_index": len(missing_content_hashes),
+                    "step": "generating embeddings",
+                    "title": str(entry.get("title", "")),
+                    "chunk_count": len(chunks),
+                }
+            )
         embeddings = [client.embed(chunk) for chunk in chunks]
         meta = {
             "title": str(entry.get("title", "")),
@@ -443,10 +513,32 @@ def index_missing_articles(
             "clean_text_path": str(clean_text_path),
             "scrape_timestamp": str(entry.get("scrape_timestamp", "")),
         }
+        if progress_callback:
+            progress_callback(
+                {
+                    "event": "step",
+                    "content_hash": content_hash,
+                    "article_position": article_pos,
+                    "total_to_index": len(missing_content_hashes),
+                    "step": "writing to index",
+                    "title": meta["title"],
+                }
+            )
         inserted = index.add_chunks(content_hash=content_hash, chunks=chunks, embeddings=embeddings, metadata=meta)
         if inserted <= 0:
             continue
 
+        if progress_callback:
+            progress_callback(
+                {
+                    "event": "step",
+                    "content_hash": content_hash,
+                    "article_position": article_pos,
+                    "total_to_index": len(missing_content_hashes),
+                    "step": "marking indexed",
+                    "title": meta["title"],
+                }
+            )
         indexed_articles[content_hash] = {
             "content_hash": content_hash,
             "source": meta["source"],
@@ -460,6 +552,17 @@ def index_missing_articles(
         }
         newly_indexed_articles += 1
         newly_indexed_chunks += inserted
+        if progress_callback:
+            progress_callback(
+                {
+                    "event": "article_done",
+                    "indexed_so_far": newly_indexed_articles,
+                    "total_to_index": len(missing_content_hashes),
+                    "already_indexed": already_indexed,
+                    "remaining": max(len(missing_content_hashes) - article_pos, 0),
+                    "title": meta["title"],
+                }
+            )
 
     vector_manifest["articles"] = indexed_articles
     final_manifest_path = _save_vector_manifest(vector_manifest, manifest_path)
@@ -475,6 +578,10 @@ def index_missing_articles(
         "missing_articles_total": sync_status["missing_articles_total"],
         "is_index_up_to_date": sync_status["is_index_up_to_date"],
         "embedding_mode": client.embedding_mode,
+        "total_discovered": total_discovered,
+        "eligible_for_indexing": len(missing_content_hashes),
+        "already_indexed_articles": already_indexed,
+        "processed_scan_directory": str(processed_root),
         "vector_manifest_path": final_manifest_path,
         "vector_index_path": str(index.db_path),
     }

@@ -20,8 +20,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from mcp_server.server import run_ask_the_prophet, run_index_data, run_pipeline
-from mcp_server.rag import get_indexing_status
+from mcp_server.server import run_ask_the_prophet, run_pipeline
+from mcp_server.rag import get_indexing_status, ingest_new_articles
 from frontend.btc_data import fetch_btc_history, fetch_spot_btc_price
 
 st.set_page_config(
@@ -280,19 +280,73 @@ def render_prophet_dashboard() -> None:
                     keyword_filter_enabled=keyword_filter_enabled,
                 )
         if index_clicked:
+            progress_header = st.empty()
+            progress_meta = st.empty()
+            progress_step = st.empty()
+            progress_bar = st.progress(0.0)
+            progress_header.markdown('<div class="small">Indexing started…</div>', unsafe_allow_html=True)
+
+            progress_state = {
+                "eligible_for_indexing": 0,
+                "already_indexed": 0,
+                "total_discovered": 0,
+                "indexed_so_far": 0,
+            }
+
+            def _on_progress(event: dict) -> None:
+                if event.get("event") == "scan":
+                    progress_state["eligible_for_indexing"] = int(event.get("eligible_for_indexing", 0))
+                    progress_state["already_indexed"] = int(event.get("already_indexed", 0))
+                    progress_state["total_discovered"] = int(event.get("total_discovered", 0))
+                    progress_meta.markdown(
+                        (
+                            '<div class="small">Scanning processed corpus only: '
+                            f"<strong>{event.get('processed_scan_directory', '')}</strong><br/>"
+                            f"Discovered: <strong>{progress_state['total_discovered']}</strong> · "
+                            f"Eligible: <strong>{progress_state['eligible_for_indexing']}</strong> · "
+                            f"Already indexed/skipped: <strong>{progress_state['already_indexed']}</strong> · "
+                            f"Remaining: <strong>{event.get('remaining', 0)}</strong></div>"
+                        ),
+                        unsafe_allow_html=True,
+                    )
+                    progress_bar.progress(0.0 if progress_state["eligible_for_indexing"] else 1.0)
+                elif event.get("event") == "step":
+                    title = event.get("title", "Untitled")
+                    step = event.get("step", "")
+                    pos = event.get("article_position", 0)
+                    total = event.get("total_to_index", 0)
+                    progress_step.markdown(
+                        f'<div class="small">[{pos}/{total}] {title} · {step}</div>',
+                        unsafe_allow_html=True,
+                    )
+                elif event.get("event") == "article_done":
+                    indexed_so_far = int(event.get("indexed_so_far", 0))
+                    total = int(event.get("total_to_index", 0))
+                    progress_state["indexed_so_far"] = indexed_so_far
+                    fraction = (indexed_so_far / total) if total else 1.0
+                    progress_bar.progress(min(max(fraction, 0.0), 1.0))
+                    progress_header.markdown(
+                        f'<div class="small">Indexing progress: <strong>{indexed_so_far} / {total}</strong> articles indexed</div>',
+                        unsafe_allow_html=True,
+                    )
+
             with st.spinner("Indexing saved local corpus from /data ..."):
-                st.session_state.index_data_feedback = run_index_data()
+                st.session_state.index_data_feedback = ingest_new_articles(progress_callback=_on_progress)
 
         index_feedback = st.session_state.index_data_feedback
         if index_feedback:
-            if index_feedback.get("ok") == "true":
-                inspected = index_feedback.get("inspected_articles", 0)
+            if not index_feedback.get("error"):
+                inspected = index_feedback.get("total_discovered", index_feedback.get("processed_articles_total", 0))
                 new_articles = index_feedback.get("new_articles_indexed", 0)
-                already_indexed = index_feedback.get("already_indexed_articles", 0)
+                already_indexed = index_feedback.get(
+                    "already_indexed_articles",
+                    max(int(inspected) - int(new_articles), 0),
+                )
                 new_chunks = index_feedback.get("new_chunks_indexed", 0)
                 st.markdown(
                     (
                         '<div class="small">Index run complete · '
+                        f"Processed scan dir: <strong>{index_feedback.get('processed_scan_directory', 'data/processed')}</strong> · "
                         f"Inspected: <strong>{inspected}</strong> · "
                         f"Newly indexed articles: <strong>{new_articles}</strong> · "
                         f"Already indexed/skipped: <strong>{already_indexed}</strong> · "

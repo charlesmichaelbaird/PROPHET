@@ -183,6 +183,33 @@ class TestRagPipeline(unittest.TestCase):
         self.assertIn("Click 'Index Data'", result["answer"])
         self.assertEqual(result["indexing_triggered"], False)
 
+    def test_indexing_emits_progress_events_and_processed_scan_dir(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            now = datetime.now(timezone.utc)
+            persist_article_if_new(
+                homepage_url="https://example.com",
+                source_homepage_url="https://example.com",
+                article_url="https://example.com/article/delta",
+                title="Delta",
+                scrape_timestamp=now,
+                clean_text=" ".join(["delta"] * 220),
+                data_root=root,
+            )
+
+            events: list[dict] = []
+            result = ingest_new_articles(
+                client=_FakeEmbedClient(),
+                index=LocalVectorIndex(db_path=root / "index" / "vector_store.sqlite"),
+                manifest_path=root / "index" / "vector_manifest.json",
+                data_root=root,
+                progress_callback=events.append,
+            )
+
+            self.assertTrue(any(event.get("event") == "scan" for event in events))
+            self.assertTrue(any(event.get("event") == "step" for event in events))
+            self.assertTrue(str(root / "processed") in result.get("processed_scan_directory", ""))
+
 
 if __name__ == "__main__":
     unittest.main()
