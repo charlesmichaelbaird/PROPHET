@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from mcp_server.rag import ingest_new_articles
-from mcp_server.tools import analyze_homepage, ask_the_prophet
+from mcp_server.tools import analyze_homepage, ask_the_prophet, query_site_article_count
 
 
 def run_pipeline(
@@ -83,6 +83,17 @@ def run_ask_the_prophet(question: str, article_corpus: list[dict[str, str]]) -> 
         }
 
 
+def run_article_count_query(homepage_url: str, max_links: int = 200) -> dict:
+    """Run lightweight discovery-only count query for candidate article links."""
+    try:
+        result = query_site_article_count(homepage_url=homepage_url, max_links=max_links)
+        return {"ok": "true", "error": "", **result}
+    except ValueError as exc:
+        return {"ok": "false", "error": f"Invalid URL: {exc}", "homepage_url": homepage_url, "links_found": 0, "preview": []}
+    except Exception as exc:
+        return {"ok": "false", "error": f"Count query failed: {exc}", "homepage_url": homepage_url, "links_found": 0, "preview": []}
+
+
 def run_index_data() -> dict:
     """Run explicit index-only pass over locally saved corpus."""
     try:
@@ -111,6 +122,7 @@ def run_index_data() -> dict:
 TOOLS = {
     "analyze_homepage": analyze_homepage,
     "run_pipeline": run_pipeline,
+    "run_article_count_query": run_article_count_query,
     "run_ask_the_prophet": run_ask_the_prophet,
     "run_index_data": run_index_data,
 }

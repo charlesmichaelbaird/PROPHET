@@ -676,6 +676,29 @@ def analyze_homepage(
     return result
 
 
+def query_site_article_count(
+    homepage_url: str,
+    max_links: int = 200,
+) -> dict:
+    """Run lightweight article-link discovery/count without scraping article bodies."""
+    homepage_html = fetch_url(homepage_url)
+    link_entries = extract_article_links(homepage_html, homepage_url, max_links=max_links)
+    preview = []
+    for entry in link_entries[:10]:
+        preview.append(
+            {
+                "url": entry.get("url", ""),
+                "title": entry.get("title", "") or entry.get("url", ""),
+            }
+        )
+
+    return {
+        "homepage_url": homepage_url,
+        "links_found": len(link_entries),
+        "preview": preview,
+    }
+
+
 def ask_the_prophet(
     question: str,
     article_corpus: list[dict[str, str]],
