@@ -39,13 +39,6 @@ class RetrievalChunk:
     content_hash: str
 
 
-def _base_model_name(model_name: str) -> str:
-    cleaned = str(model_name).strip()
-    if ":" in cleaned:
-        return cleaned.split(":", 1)[0].strip()
-    return cleaned
-
-
 def discover_ollama_models(base_url: str = DEFAULT_OLLAMA_BASE_URL, timeout_seconds: float = DEFAULT_OLLAMA_TIMEOUT_SECONDS) -> dict[str, Any]:
     """Discover locally installed Ollama models and derive role-friendly candidate lists."""
     normalized_url = base_url.rstrip("/")
@@ -66,7 +59,7 @@ def discover_ollama_models(base_url: str = DEFAULT_OLLAMA_BASE_URL, timeout_seco
 
     discovered: list[str] = []
     for row in raw_models:
-        name = _base_model_name(str(row.get("name", "")))
+        name = str(row.get("name", "")).strip()
         if name and name not in discovered:
             discovered.append(name)
 
