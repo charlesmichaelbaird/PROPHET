@@ -128,6 +128,14 @@ if "ask_prophet_index_verification" not in st.session_state:
     st.session_state.ask_prophet_index_verification = {}
 if "ask_prophet_embedding_mode" not in st.session_state:
     st.session_state.ask_prophet_embedding_mode = ""
+if "ask_prophet_diagnostics" not in st.session_state:
+    st.session_state.ask_prophet_diagnostics = {}
+if "ask_prophet_status" not in st.session_state:
+    st.session_state.ask_prophet_status = "idle"
+if "ask_prophet_started_at" not in st.session_state:
+    st.session_state.ask_prophet_started_at = 0.0
+if "ask_prophet_elapsed_seconds" not in st.session_state:
+    st.session_state.ask_prophet_elapsed_seconds = 0
 if "index_data_feedback" not in st.session_state:
     st.session_state.index_data_feedback = {}
 if "ollama_process" not in st.session_state:
@@ -316,6 +324,16 @@ def _format_elapsed(seconds: int) -> str:
     hours, remainder = divmod(seconds, 3600)
     minutes, secs = divmod(remainder, 60)
     return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+
+
+def _ask_status_label(status: str) -> str:
+    labels = {
+        "idle": "idle",
+        "running": "running",
+        "completed": "completed",
+        "failed": "failed",
+    }
+    return labels.get(status, status or "idle")
 
 
 def _render_scrape_loading_bar(source_name: str) -> None:
@@ -1238,12 +1256,23 @@ def render_prophet_dashboard() -> None:
                 st.session_state.ask_prophet_indexing_triggered = False
                 st.session_state.ask_prophet_index_verification = {}
                 st.session_state.ask_prophet_embedding_mode = ""
+                st.session_state.ask_prophet_diagnostics = {}
+                st.session_state.ask_prophet_status = "idle"
+                st.session_state.ask_prophet_started_at = 0.0
+                st.session_state.ask_prophet_elapsed_seconds = 0
             else:
-                ask_result = run_ask_the_prophet(
-                    question=ask_question,
-                    article_corpus=(result or {}).get("article_corpus", []),
-                    embedding_model=st.session_state.selected_embedding_model,
-                    answer_model=st.session_state.selected_answer_model,
+                st.session_state.ask_prophet_status = "running"
+                st.session_state.ask_prophet_started_at = time.time()
+                st.session_state.ask_prophet_elapsed_seconds = 0
+                with st.spinner("Running Ask The Prophet (embed → retrieve → generate)…"):
+                    ask_result = run_ask_the_prophet(
+                        question=ask_question,
+                        article_corpus=(result or {}).get("article_corpus", []),
+                        embedding_model=st.session_state.selected_embedding_model,
+                        answer_model=st.session_state.selected_answer_model,
+                    )
+                st.session_state.ask_prophet_elapsed_seconds = int(
+                    max(time.time() - float(st.session_state.ask_prophet_started_at or time.time()), 0.0)
                 )
                 st.session_state.ask_prophet_error = ask_result.get("error", "")
                 st.session_state.ask_prophet_answer = ask_result.get("answer", "")
@@ -1252,6 +1281,17 @@ def render_prophet_dashboard() -> None:
                 st.session_state.ask_prophet_indexing_triggered = bool(ask_result.get("indexing_triggered"))
                 st.session_state.ask_prophet_index_verification = ask_result.get("index_verification", {})
                 st.session_state.ask_prophet_embedding_mode = ask_result.get("embedding_mode", "")
+                st.session_state.ask_prophet_diagnostics = ask_result.get("diagnostics", {})
+                st.session_state.ask_prophet_status = "failed" if st.session_state.ask_prophet_error else "completed"
+
+        st.markdown(
+            (
+                '<div class="small">Ask status: '
+                f"<strong>{_ask_status_label(st.session_state.ask_prophet_status)}</strong> · "
+                f"Elapsed: <strong>{_format_elapsed(st.session_state.ask_prophet_elapsed_seconds)}</strong></div>"
+            ),
+            unsafe_allow_html=True,
+        )
 
         if st.session_state.ask_prophet_error:
             st.warning(st.session_state.ask_prophet_error)
@@ -1277,6 +1317,22 @@ def render_prophet_dashboard() -> None:
                 ),
                 unsafe_allow_html=True,
             )
+            diagnostics = st.session_state.ask_prophet_diagnostics or {}
+            if diagnostics:
+                st.markdown(
+                    (
+                        '<div class="small">Ask runtime: '
+                        f"stage=<strong>{diagnostics.get('stage', 'unknown')}</strong> · "
+                        f"retrieved=<strong>{int(diagnostics.get('retrieval_count', 0))}</strong> · "
+                        f"top score=<strong>{float(diagnostics.get('top_score', 0.0)):.3f}</strong> · "
+                        f"embed/retrieve/generate ms=<strong>"
+                        f"{int(diagnostics.get('embed_ms', 0))}/"
+                        f"{int(diagnostics.get('retrieval_ms', 0))}/"
+                        f"{int(diagnostics.get('chat_ms', 0))}</strong> · "
+                        f"total ms=<strong>{int(diagnostics.get('total_ms', 0))}</strong></div>"
+                    ),
+                    unsafe_allow_html=True,
+                )
             if st.session_state.ask_prophet_indexing_triggered:
                 st.markdown(
                     '<div class="small">Pre-answer check: Missing corpus items were indexed before retrieval.</div>',
@@ -1289,6 +1345,17 @@ def render_prophet_dashboard() -> None:
             st.markdown("**Supporting scraped sources**")
             for citation in st.session_state.ask_prophet_citations:
                 st.markdown(f"- [{citation['title']}]({citation['url']})")
+        index_verification = st.session_state.ask_prophet_index_verification or {}
+        if index_verification:
+            st.markdown(
+                (
+                    '<div class="small">Index verification: '
+                    f"processed=<strong>{int(index_verification.get('processed_articles_total', 0))}</strong> · "
+                    f"indexed=<strong>{int(index_verification.get('indexed_articles_total', 0))}</strong> · "
+                    f"missing=<strong>{int(index_verification.get('missing_articles_total', 0))}</strong></div>"
+                ),
+                unsafe_allow_html=True,
+            )
 
         st.markdown(
             '<div class="small">Grounding note: responses are constrained to scraped article excerpts and may decline when evidence is insufficient.</div>',
