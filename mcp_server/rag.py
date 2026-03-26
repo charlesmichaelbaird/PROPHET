@@ -926,7 +926,7 @@ def answer_question(
         return {"ok": "false", "error": "Please enter a question first.", "answer": "", "citations": []}
 
     client = client or OllamaClient(embed_model=embedding_model, chat_model=answer_model)
-    _ = index
+    explicit_index = index
     selected_embedding_model = (
         embedding_model
         or getattr(client, "embed_model", "")
