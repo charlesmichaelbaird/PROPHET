@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import re
 import sqlite3
+import time
 from typing import Any
 from urllib.parse import urlparse
 
@@ -127,7 +128,22 @@ class OllamaClient:
         self.embed_model = embed_model.strip()
         self.chat_model = chat_model.strip()
         self.timeout_seconds = timeout_seconds
+        self.chat_timeout_seconds = float(
+            os.getenv("PROPHET_OLLAMA_CHAT_TIMEOUT_SECONDS", str(max(timeout_seconds, 180.0)))
+        )
         self.embedding_mode = "unknown"
+
+    @staticmethod
+    def _resolve_model_name(discovered: list[str], requested: str) -> str:
+        requested_clean = requested.strip()
+        if not requested_clean:
+            return ""
+        if requested_clean in discovered:
+            return requested_clean
+        for installed in discovered:
+            if installed.startswith(f"{requested_clean}:") or requested_clean.startswith(f"{installed}:"):
+                return installed
+        return ""
 
     def embed(self, text: str) -> list[float]:
         """Embed text using native Ollama /api/embed endpoint."""
@@ -152,7 +168,7 @@ class OllamaClient:
     def _candidate_embedding_models(self) -> list[str]:
         discovered = self._discover_installed_models()
         if self.embed_model:
-            if discovered and self.embed_model not in discovered:
+            if discovered and not self._resolve_model_name(discovered, self.embed_model):
                 raise RuntimeError(
                     f"Selected embedding model '{self.embed_model}' is not installed in local Ollama."
                 )
@@ -228,7 +244,8 @@ class OllamaClient:
             requested_chat_model = discovered[0]
         if not requested_chat_model:
             raise RuntimeError("No answer model is selected and no local Ollama models were discovered.")
-        if discovered and requested_chat_model not in discovered:
+        resolved_chat_model = self._resolve_model_name(discovered, requested_chat_model) if discovered else requested_chat_model
+        if discovered and not resolved_chat_model:
             raise RuntimeError(
                 f"Selected answer model '{requested_chat_model}' is not installed in local Ollama."
             )
@@ -251,23 +268,30 @@ class OllamaClient:
             f"Evidence:\n{context}\n\n"
             "Return a concise answer and include brief source references like [Source 1]."
         )
-        response = requests.post(
-            f"{self.base_url}/api/chat",
-            json={
-                "model": requested_chat_model,
-                "stream": False,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-            },
-            timeout=self.timeout_seconds,
-        )
+        try:
+            response = requests.post(
+                f"{self.base_url}/api/chat",
+                json={
+                    "model": resolved_chat_model,
+                    "stream": False,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                },
+                timeout=self.chat_timeout_seconds,
+            )
+        except requests.exceptions.Timeout as exc:
+            raise RuntimeError(
+                f"Ollama chat timed out after {self.chat_timeout_seconds:.0f}s for model "
+                f"'{resolved_chat_model}'. Try a smaller/faster model (for example llama3) "
+                "or increase PROPHET_OLLAMA_CHAT_TIMEOUT_SECONDS."
+            ) from exc
         try:
             response.raise_for_status()
         except requests.exceptions.HTTPError as exc:
             raise RuntimeError(
-                f"Selected answer model '{requested_chat_model}' could not serve chat/generation: {exc}"
+                f"Selected answer model '{resolved_chat_model}' could not serve chat/generation: {exc}"
             ) from exc
         payload = response.json()
         message = payload.get("message", {})
@@ -450,6 +474,7 @@ def ingest_new_articles(
     progress_callback: Any | None = None,
     embedding_model: str = "",
     answer_model: str = "",
+    source_partition: str = "",
 ) -> dict[str, Any]:
     """Index missing scraped articles from flat-file corpus into persistent local vector index."""
     ensure_data_directories(data_root=data_root)
@@ -479,6 +504,20 @@ def ingest_new_articles(
         data_root=data_root,
         embedding_model=selected_embedding_model,
     )["missing_content_hashes"]
+    if source_partition.strip():
+        normalized_source = _slugify_fs(source_partition.strip().lower(), max_len=60)
+        source_aliases = {
+            "apnews-com": "ap-news",
+            "www-bbc-com": "bbc",
+            "bbc-com": "bbc",
+        }
+        normalized_source = source_aliases.get(normalized_source, normalized_source)
+        article_entries, _ = _processed_article_entries(data_root=data_root)
+        missing_hashes = [
+            content_hash
+            for content_hash in missing_hashes
+            if _normalize_source_partition(article_entries.get(content_hash, {})) == normalized_source
+        ]
     return index_missing_articles(
         missing_content_hashes=missing_hashes,
         client=client,
@@ -906,12 +945,39 @@ def answer_question(
     embedding_model: str = "",
     answer_model: str = "",
 ) -> dict[str, Any]:
+    started_at = time.perf_counter()
+
+    def _diag(
+        *,
+        stage: str,
+        retrieval_count: int = 0,
+        top_score: float = 0.0,
+        embed_ms: int = 0,
+        retrieval_ms: int = 0,
+        chat_ms: int = 0,
+    ) -> dict[str, Any]:
+        return {
+            "stage": stage,
+            "retrieval_count": retrieval_count,
+            "top_score": top_score,
+            "embed_ms": embed_ms,
+            "retrieval_ms": retrieval_ms,
+            "chat_ms": chat_ms,
+            "total_ms": int((time.perf_counter() - started_at) * 1000),
+        }
+
     cleaned_question = question.strip()
     if not cleaned_question:
-        return {"ok": "false", "error": "Please enter a question first.", "answer": "", "citations": []}
+        return {
+            "ok": "false",
+            "error": "Please enter a question first.",
+            "answer": "",
+            "citations": [],
+            "diagnostics": _diag(stage="idle"),
+        }
 
     client = client or OllamaClient(embed_model=embedding_model, chat_model=answer_model)
-    _ = index
+    explicit_index = index
     selected_embedding_model = (
         embedding_model
         or getattr(client, "embed_model", "")
@@ -939,9 +1005,13 @@ def answer_question(
             "embedding_mode": client.embedding_mode,
             "selected_embedding_model": selected_embedding_model,
             "selected_answer_model": selected_answer_model,
+            "diagnostics": _diag(stage="indexing_required"),
         }
 
+    embed_started = time.perf_counter()
     query_vector = client.embed(cleaned_question)
+    embed_ms = int((time.perf_counter() - embed_started) * 1000)
+    retrieval_started = time.perf_counter()
     retrieved: list[RetrievalChunk] = []
     if explicit_index is not None:
         retrieved = explicit_index.similarity_search(query_vector, top_k=top_k)
@@ -955,6 +1025,7 @@ def answer_question(
             retrieved.extend(source_index.similarity_search(query_vector, top_k=top_k))
         retrieved.sort(key=lambda item: item.score, reverse=True)
         retrieved = retrieved[:top_k]
+    retrieval_ms = int((time.perf_counter() - retrieval_started) * 1000)
     if not retrieved:
         return {
             "ok": "true",
@@ -969,6 +1040,7 @@ def answer_question(
             "embedding_mode": client.embedding_mode,
             "selected_embedding_model": selected_embedding_model,
             "selected_answer_model": selected_answer_model,
+            "diagnostics": _diag(stage="retrieved_none", embed_ms=embed_ms, retrieval_ms=retrieval_ms),
         }
 
     best_score = retrieved[0].score
@@ -986,9 +1058,18 @@ def answer_question(
             "embedding_mode": client.embedding_mode,
             "selected_embedding_model": selected_embedding_model,
             "selected_answer_model": selected_answer_model,
+            "diagnostics": _diag(
+                stage="retrieved_low_confidence",
+                retrieval_count=len(retrieved),
+                top_score=best_score,
+                embed_ms=embed_ms,
+                retrieval_ms=retrieval_ms,
+            ),
         }
 
+    chat_started = time.perf_counter()
     answer = client.chat(cleaned_question, retrieved)
+    chat_ms = int((time.perf_counter() - chat_started) * 1000)
     if not answer:
         answer = "Not enough relevant scraped data to answer this question yet."
 
@@ -1016,4 +1097,12 @@ def answer_question(
         "embedding_mode": client.embedding_mode,
         "selected_embedding_model": selected_embedding_model,
         "selected_answer_model": selected_answer_model,
+        "diagnostics": _diag(
+            stage="completed",
+            retrieval_count=len(retrieved),
+            top_score=best_score,
+            embed_ms=embed_ms,
+            retrieval_ms=retrieval_ms,
+            chat_ms=chat_ms,
+        ),
     }

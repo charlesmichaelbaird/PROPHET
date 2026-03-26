@@ -147,10 +147,20 @@ def run_article_count_query_by_date(source_name: str, date_str: str, max_links: 
         return {"ok": "false", "error": f"Date-based count query failed: {exc}", "links_found": 0, "preview": []}
 
 
-def run_pipeline_by_date(source_name: str, date_str: str, max_articles: int = 200) -> dict:
+def run_pipeline_by_date(
+    source_name: str,
+    date_str: str,
+    max_articles: int = 200,
+    progress_callback=None,
+) -> dict:
     """Run full date-based article scrape + processing pipeline."""
     try:
-        result = scrape_source_articles_by_date(source_name=source_name, date_str=date_str, max_articles=max_articles)
+        result = scrape_source_articles_by_date(
+            source_name=source_name,
+            date_str=date_str,
+            max_articles=max_articles,
+            progress_callback=progress_callback,
+        )
         return {"ok": "true", "error": "", **result}
     except ValueError as exc:
         return {
