@@ -136,7 +136,7 @@ if "ap_scrape_feedback" not in st.session_state:
 
 AP_NEWS_URL = "https://apnews.com/"
 AP_SOURCE_DIRNAME = "apnews-com"
-AP_SCRAPE_MAX_ARTICLES = 20
+AP_SCRAPE_FALLBACK_MAX_ARTICLES = 200
 
 
 def _is_ollama_api_alive(host: str) -> bool:
@@ -298,17 +298,23 @@ with banner_middle:
             )
 
     if scrape_clicked:
+        latest_query = st.session_state.ap_query_result if st.session_state.ap_query_result.get("ok") == "true" else {}
+        requested_scrape_count = int(latest_query.get("links_found", 0)) or AP_SCRAPE_FALLBACK_MAX_ARTICLES
         with st.spinner("Running AP News data scrape..."):
             st.session_state.analysis_result = run_pipeline(
                 AP_NEWS_URL,
-                AP_SCRAPE_MAX_ARTICLES,
+                requested_scrape_count,
                 keyword="",
                 keyword_filter_enabled=False,
             )
         result_ok = st.session_state.analysis_result.get("ok") == "true"
         if result_ok:
             scraped = st.session_state.analysis_result.get("articles_scraped", 0)
-            st.session_state.ap_scrape_feedback = f"AP News scrape complete. Articles scraped this run: {scraped}."
+            attempted = st.session_state.analysis_result.get("articles_attempted", 0)
+            st.session_state.ap_scrape_feedback = (
+                "AP News scrape complete. "
+                f"Requested: {requested_scrape_count} · Attempted: {attempted} · Scraped: {scraped}."
+            )
         else:
             st.session_state.ap_scrape_feedback = st.session_state.analysis_result.get("error", "AP News scrape failed.")
 
@@ -332,6 +338,14 @@ with banner_middle:
 
     if st.session_state.ap_scrape_feedback:
         st.markdown(f'<div class="small">{st.session_state.ap_scrape_feedback}</div>', unsafe_allow_html=True)
+    elif query_result and query_result.get("ok") == "true":
+        st.markdown(
+            (
+                '<div class="small">Data Scrape will target the latest discovered count: '
+                f"<strong>{query_result.get('links_found', 0)}</strong> candidate links.</div>"
+            ),
+            unsafe_allow_html=True,
+        )
 
     scraped_local_count = _count_locally_scraped_ap_articles()
     discovered_count = query_result.get("links_found", 0) if query_result else 0
