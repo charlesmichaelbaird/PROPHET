@@ -148,11 +148,18 @@ if "ap_query_result" not in st.session_state:
     st.session_state.ap_query_result = {}
 if "ap_scrape_feedback" not in st.session_state:
     st.session_state.ap_scrape_feedback = ""
+if "reuters_query_result" not in st.session_state:
+    st.session_state.reuters_query_result = {}
+if "reuters_scrape_feedback" not in st.session_state:
+    st.session_state.reuters_scrape_feedback = ""
 
 
 AP_NEWS_URL = "https://apnews.com/"
 AP_SOURCE_DIRNAME = "apnews-com"
 AP_SCRAPE_FALLBACK_MAX_ARTICLES = 200
+REUTERS_URL = "https://www.reuters.com/"
+REUTERS_SOURCE_DIRNAME = "www-reuters-com"
+REUTERS_SCRAPE_FALLBACK_MAX_ARTICLES = 200
 
 
 def _is_ollama_api_alive(host: str) -> bool:
@@ -250,6 +257,13 @@ def render_meta_chips() -> None:
 
 def _count_locally_scraped_ap_articles() -> int:
     processed_root = REPO_ROOT / "data" / "processed" / AP_SOURCE_DIRNAME
+    if not processed_root.exists():
+        return 0
+    return sum(1 for _ in processed_root.glob("*/*/metadata.json"))
+
+
+def _count_locally_scraped_reuters_articles() -> int:
+    processed_root = REPO_ROOT / "data" / "processed" / REUTERS_SOURCE_DIRNAME
     if not processed_root.exists():
         return 0
     return sum(1 for _ in processed_root.glob("*/*/metadata.json"))
@@ -397,9 +411,12 @@ with hero_right:
 st.markdown("</section>", unsafe_allow_html=True)
 
 st.markdown('<section class="source-banner">', unsafe_allow_html=True)
-st.markdown('<div class="panel-title">Source Ingestion · AP News</div>', unsafe_allow_html=True)
-banner_left, banner_middle, banner_right = st.columns([1.2, 1.6, 1.2], gap="large")
+st.markdown('<div class="panel-title">Source Ingestion · AP News + Reuters</div>', unsafe_allow_html=True)
+banner_left, banner_middle, banner_right = st.columns([0.5, 3.2, 0.5], gap="large")
 with banner_middle:
+    ap_col, reuters_col = st.columns(2, gap="large")
+
+with ap_col:
     st.markdown(
         (
             '<div class="source-card">'
@@ -478,6 +495,103 @@ with banner_middle:
             '<div class="small">AP corpus status · '
             f"Discovered (latest query): <strong>{discovered_count}</strong> · "
             f"Scraped locally: <strong>{scraped_local_count}</strong></div>"
+        ),
+        unsafe_allow_html=True,
+    )
+
+with reuters_col:
+    st.markdown(
+        (
+            '<div class="source-card">'
+            '<div style="font-size:1.35rem;">🌐</div>'
+            '<div class="source-card-label">Reuters</div>'
+            '<div class="source-card-url">https://www.reuters.com/</div>'
+            "</div>"
+        ),
+        unsafe_allow_html=True,
+    )
+
+    reuters_query_clicked = st.button(
+        "Query Site Article Count",
+        key="reuters_query_site_article_count",
+        use_container_width=True,
+    )
+    reuters_scrape_clicked = st.button(
+        "Data Scrape",
+        key="reuters_data_scrape",
+        use_container_width=True,
+    )
+
+    if reuters_query_clicked:
+        with st.spinner("Querying Reuters homepage links..."):
+            st.session_state.reuters_query_result = run_article_count_query(
+                homepage_url=REUTERS_URL,
+                max_links=220,
+            )
+
+    if reuters_scrape_clicked:
+        latest_reuters_query = (
+            st.session_state.reuters_query_result if st.session_state.reuters_query_result.get("ok") == "true" else {}
+        )
+        requested_reuters_scrape_count = (
+            int(latest_reuters_query.get("links_found", 0)) or REUTERS_SCRAPE_FALLBACK_MAX_ARTICLES
+        )
+        with st.spinner("Running Reuters data scrape..."):
+            reuters_result = run_pipeline(
+                REUTERS_URL,
+                requested_reuters_scrape_count,
+                keyword="",
+                keyword_filter_enabled=False,
+            )
+            st.session_state.analysis_result = reuters_result
+
+        reuters_ok = reuters_result.get("ok") == "true"
+        if reuters_ok:
+            reuters_scraped = reuters_result.get("articles_scraped", 0)
+            reuters_attempted = reuters_result.get("articles_attempted", 0)
+            st.session_state.reuters_scrape_feedback = (
+                "Reuters scrape complete. "
+                f"Requested: {requested_reuters_scrape_count} · Attempted: {reuters_attempted} · Scraped: {reuters_scraped}."
+            )
+        else:
+            st.session_state.reuters_scrape_feedback = reuters_result.get("error", "Reuters scrape failed.")
+
+    reuters_query_result = st.session_state.reuters_query_result
+    if reuters_query_result:
+        if reuters_query_result.get("ok") == "true":
+            st.markdown(
+                (
+                    '<div class="small">Discovery complete · Candidate Reuters article links: '
+                    f"<strong>{reuters_query_result.get('links_found', 0)}</strong></div>"
+                ),
+                unsafe_allow_html=True,
+            )
+            reuters_preview = reuters_query_result.get("preview", [])
+            if reuters_preview:
+                st.markdown('<div class="small">Preview:</div>', unsafe_allow_html=True)
+                for item in reuters_preview[:5]:
+                    st.markdown(f"- [{item.get('title', item.get('url', ''))}]({item.get('url', '')})")
+        else:
+            st.warning(reuters_query_result.get("error", "Reuters count query failed."))
+
+    if st.session_state.reuters_scrape_feedback:
+        st.markdown(f'<div class="small">{st.session_state.reuters_scrape_feedback}</div>', unsafe_allow_html=True)
+    elif reuters_query_result and reuters_query_result.get("ok") == "true":
+        st.markdown(
+            (
+                '<div class="small">Data Scrape will target the latest discovered count: '
+                f"<strong>{reuters_query_result.get('links_found', 0)}</strong> candidate links.</div>"
+            ),
+            unsafe_allow_html=True,
+        )
+
+    reuters_scraped_local_count = _count_locally_scraped_reuters_articles()
+    reuters_discovered_count = reuters_query_result.get("links_found", 0) if reuters_query_result else 0
+    st.markdown(
+        (
+            '<div class="small">Reuters corpus status · '
+            f"Discovered (latest query): <strong>{reuters_discovered_count}</strong> · "
+            f"Scraped locally: <strong>{reuters_scraped_local_count}</strong></div>"
         ),
         unsafe_allow_html=True,
     )
