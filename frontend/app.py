@@ -130,6 +130,12 @@ if "ollama_toggle_state" not in st.session_state:
     st.session_state.ollama_toggle_state = False
 if "ollama_last_error" not in st.session_state:
     st.session_state.ollama_last_error = ""
+if "ollama_runtime_status" not in st.session_state:
+    st.session_state.ollama_runtime_status = "idle"
+if "ollama_runtime_note" not in st.session_state:
+    st.session_state.ollama_runtime_note = ""
+if "ollama_autostart_attempted" not in st.session_state:
+    st.session_state.ollama_autostart_attempted = False
 if "ollama_host" not in st.session_state:
     st.session_state.ollama_host = os.getenv("PROPHET_OLLAMA_HOST", "http://localhost:11434")
 if "selected_embedding_model" not in st.session_state:
@@ -211,6 +217,26 @@ def _stop_ollama_server() -> tuple[bool, str]:
     return True, "Ollama server stopped."
 
 
+def _ensure_ollama_runtime_started(host: str) -> None:
+    if st.session_state.ollama_autostart_attempted:
+        return
+
+    st.session_state.ollama_autostart_attempted = True
+    st.session_state.ollama_runtime_status = "starting"
+    st.session_state.ollama_runtime_note = "Starting Ollama local runtime..."
+    started, message = _start_ollama_server(host)
+    if started or _is_ollama_api_alive(host):
+        st.session_state.ollama_runtime_status = "online"
+        st.session_state.ollama_runtime_note = "Ollama online."
+        st.session_state.ollama_last_error = ""
+        st.session_state.ollama_toggle_state = True
+    else:
+        st.session_state.ollama_runtime_status = "failed"
+        st.session_state.ollama_runtime_note = "Ollama failed to start."
+        st.session_state.ollama_last_error = message
+        st.session_state.ollama_toggle_state = False
+
+
 @st.fragment(run_every=1)
 def render_meta_chips() -> None:
     now_utc = datetime.now(timezone.utc)
@@ -230,6 +256,7 @@ def _count_locally_scraped_ap_articles() -> int:
 
 
 st.markdown('<section class="hero">', unsafe_allow_html=True)
+_ensure_ollama_runtime_started(st.session_state.ollama_host)
 hero_left, hero_middle, hero_right = st.columns([2.5, 1.8, 1.2], gap="medium")
 with hero_left:
     st.markdown('<p class="brand">PROPHET</p>', unsafe_allow_html=True)
@@ -280,10 +307,18 @@ with hero_middle:
         )
     else:
         st.markdown('<div class="small">Ollama unavailable: model dropdowns are disabled.</div>', unsafe_allow_html=True)
+        if model_discovery.get("error"):
+            st.markdown(f'<div class="small">{model_discovery.get("error")}</div>', unsafe_allow_html=True)
         st.selectbox("Embedding Model", options=["No models available"], index=0, disabled=True)
         st.selectbox("Answer Model", options=["No models available"], index=0, disabled=True)
 
-    index_clicked = st.button("Index Data", use_container_width=True)
+    index_clicked = st.button(
+        "Index Data",
+        use_container_width=True,
+        disabled=not model_discovery.get("available"),
+    )
+    if not model_discovery.get("available"):
+        st.markdown('<div class="small">Indexing requires local Ollama runtime.</div>', unsafe_allow_html=True)
     if index_clicked:
         with st.spinner("Indexing saved local corpus from /data ..."):
             st.session_state.index_data_feedback = ingest_new_articles(
@@ -312,38 +347,27 @@ with hero_right:
     st.markdown('<div class="panel">', unsafe_allow_html=True)
     configured_host = st.session_state.ollama_host
     alive_now = _is_ollama_api_alive(configured_host)
-
-    toggle_value = st.toggle(
-        "Ollama server",
-        value=st.session_state.ollama_toggle_state or alive_now,
-        help="Toggle on/off local Ollama runtime for Ask The Prophet.",
-    )
-
-    if toggle_value != st.session_state.ollama_toggle_state:
-        if toggle_value:
-            started, message = _start_ollama_server(configured_host)
-            st.session_state.ollama_last_error = "" if started else message
-            st.session_state.ollama_toggle_state = started or _is_ollama_api_alive(configured_host)
-            if started:
-                st.success(message)
-            else:
-                st.error(message)
-        else:
-            stopped, message = _stop_ollama_server()
-            if stopped:
-                st.session_state.ollama_toggle_state = False
-                st.success(message)
-            else:
-                st.session_state.ollama_toggle_state = _is_ollama_api_alive(configured_host)
-                st.warning(message)
-
-    alive_now = _is_ollama_api_alive(configured_host)
+    if alive_now:
+        st.session_state.ollama_runtime_status = "online"
+        st.session_state.ollama_runtime_note = "Ollama online."
+    elif st.session_state.ollama_runtime_status not in {"starting", "failed"}:
+        st.session_state.ollama_runtime_status = "failed"
+        st.session_state.ollama_runtime_note = "Ollama failed to start."
     source = "UI-managed" if st.session_state.ollama_managed_by_ui else "External/unknown"
     st.markdown(f'<div class="small">Host: <strong>{configured_host}</strong></div>', unsafe_allow_html=True)
-    if alive_now:
-        st.markdown(f'<div class="small">Status: <strong>Running</strong> ({source})</div>', unsafe_allow_html=True)
+    status = st.session_state.ollama_runtime_status
+    if status == "starting":
+        st.markdown('<div class="small">Status: <strong>Starting Ollama…</strong></div>', unsafe_allow_html=True)
+    elif status == "online":
+        st.markdown(f'<div class="small">Status: <strong>Ollama online</strong> ({source})</div>', unsafe_allow_html=True)
     else:
-        st.markdown('<div class="small">Status: <strong>Stopped</strong></div>', unsafe_allow_html=True)
+        st.markdown('<div class="small">Status: <strong>Ollama failed to start</strong></div>', unsafe_allow_html=True)
+    if st.session_state.ollama_last_error:
+        st.markdown(f'<div class="small">{st.session_state.ollama_last_error}</div>', unsafe_allow_html=True)
+    if st.button("Retry Ollama Start", use_container_width=True):
+        st.session_state.ollama_autostart_attempted = False
+        _ensure_ollama_runtime_started(configured_host)
+        st.rerun()
     st.markdown('</div>', unsafe_allow_html=True)
 st.markdown("</section>", unsafe_allow_html=True)
 
@@ -539,96 +563,6 @@ def render_prophet_dashboard() -> None:
             '<div class="small">Grounding note: responses are constrained to scraped article excerpts and may decline when evidence is insufficient.</div>',
             unsafe_allow_html=True,
         )
-        st.markdown('</div>', unsafe_allow_html=True)
-
-    result = st.session_state.analysis_result
-    bottom_left, bottom_center, bottom_right = st.columns([1, 1.5, 1], gap="large")
-    with bottom_center:
-        st.markdown('<div class="panel">', unsafe_allow_html=True)
-        st.markdown('<div class="panel-title">Prophet Summary</div>', unsafe_allow_html=True)
-        if not result:
-            st.markdown(
-                '<div class="small">Run analysis to generate a synthesized corpus summary.</div>',
-                unsafe_allow_html=True,
-            )
-        elif result["ok"] == "false":
-            st.markdown('<div class="small">Summary unavailable due to analysis error.</div>', unsafe_allow_html=True)
-        else:
-            st.write(result.get("summary", "No summary available for this run."))
-            representative_line = result.get("representative_line", "")
-            if representative_line:
-                st.markdown("**Representative line**")
-                st.markdown(f"> {representative_line}")
-                source_url = result.get("representative_source_url", "")
-                if source_url:
-                    st.markdown(f'<div class="small"><a href="{source_url}" target="_blank">View Article</a></div>', unsafe_allow_html=True)
-                else:
-                    st.markdown('<div class="small">No clear source identified.</div>', unsafe_allow_html=True)
-        st.markdown('</div>', unsafe_allow_html=True)
-
-    bottom2_left, bottom2_center, bottom2_right = st.columns([1, 1.9, 1], gap="large")
-    with bottom2_center:
-        st.markdown('<div class="panel">', unsafe_allow_html=True)
-        st.markdown('<div class="panel-title">Zero-Cost Analysis Results</div>', unsafe_allow_html=True)
-
-        if not result:
-            st.info("No analysis run yet.")
-        elif result["ok"] == "false":
-            st.error(result["error"])
-        else:
-            if result.get("keyword_filter_enabled"):
-                active_keyword = result.get("keyword", "")
-                st.success(f"Keyword filtering active: '{active_keyword}'")
-
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Links found", result["links_found"])
-            c2.metric("Articles attempted", result.get("articles_attempted", 0))
-            c3.metric("Articles scraped", result["articles_scraped"])
-            c4.metric("Articles failed", result.get("articles_failed", 0))
-            p1, p2 = st.columns(2)
-            p1.metric("New articles saved", result.get("articles_new_saved", 0))
-            p2.metric("Duplicates skipped", result.get("articles_duplicates_skipped", 0))
-
-            if result.get("keyword_filter_enabled"):
-                k1, k2, k3 = st.columns(3)
-                k1.metric("Keyword", result.get("keyword", ""))
-                k2.metric("Matching articles", result.get("matching_articles", 0))
-                k3.metric("Candidate articles considered", result.get("candidate_articles_considered", 0))
-
-            st.markdown("**Top 10 most common words**")
-            st.caption("Common stopwords, month/day/date terms, and source-noise words (e.g., photo/file/ap/news/said) are excluded.")
-            top_words = result.get("top_words", [])
-            if top_words:
-                rows = [
-                    {
-                        "word": row["word"],
-                        "total occurrences": row["total_occurrences"],
-                        "article count": row["article_count"],
-                        "article coverage %": row["article_coverage_pct"],
-                    }
-                    for row in top_words
-                ]
-                st.dataframe(rows, use_container_width=True, hide_index=True)
-            else:
-                st.warning("No word data available. Try increasing max articles or a different homepage.")
-
-            st.markdown("**Preview of scraped articles**")
-            preview = result.get("scraped_preview", [])
-            if preview:
-                for entry in preview:
-                    title = entry.get("title", entry["url"])
-                    word_count = entry.get("word_count")
-                    suffix = f" · {word_count} filtered words" if word_count else ""
-                    st.markdown(f"- [{title}]({entry['url']}){suffix}")
-            else:
-                st.markdown('<div class="small">No article previews available.</div>', unsafe_allow_html=True)
-
-            suggestions = result.get("keyword_suggestions", [])
-            if result.get("keyword_filter_enabled") and suggestions:
-                st.markdown("**Suggested alternative keywords**")
-                st.caption("Low keyword hit count detected. Try one of these broader terms.")
-                st.write(", ".join(suggestions))
-
         st.markdown('</div>', unsafe_allow_html=True)
 
 
