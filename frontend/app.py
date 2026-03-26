@@ -475,8 +475,8 @@ def render_prophet_dashboard() -> None:
         if not model_discovery.get("available") and model_discovery.get("error"):
             st.warning(model_discovery.get("error"))
         if ask_clicked:
-            if not result or result.get("ok") == "false":
-                st.session_state.ask_prophet_error = "Run a scrape analysis first so Prophet has evidence to search."
+            if not ask_question.strip():
+                st.session_state.ask_prophet_error = "Please enter a question first."
                 st.session_state.ask_prophet_answer = ""
                 st.session_state.ask_prophet_citations = []
                 st.session_state.ask_prophet_engine = ""
@@ -486,7 +486,7 @@ def render_prophet_dashboard() -> None:
             else:
                 ask_result = run_ask_the_prophet(
                     question=ask_question,
-                    article_corpus=result.get("article_corpus", []),
+                    article_corpus=(result or {}).get("article_corpus", []),
                     embedding_model=st.session_state.selected_embedding_model,
                     answer_model=st.session_state.selected_answer_model,
                 )
