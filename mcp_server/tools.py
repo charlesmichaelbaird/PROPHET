@@ -126,6 +126,11 @@ BBC_NON_ENGLISH_PATH_MARKERS = (
     "/uz/",
 )
 
+BBC_ENGLISH_NEWS_PATH_PREFIXES = (
+    "/news",
+    "/newsround",
+)
+
 
 class ArticleLinkParser(HTMLParser):
     """Collect anchor URLs and visible anchor text."""
@@ -245,6 +250,22 @@ class DocumentTitleParser(HTMLParser):
     def get_title(self) -> str:
         title_tag = " ".join(self._title_parts).strip()
         return self.meta_title or title_tag
+
+
+class DocumentLangParser(HTMLParser):
+    """Extract the html[lang] declaration from a page."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.lang = ""
+
+    def handle_starttag(self, tag: str, attrs) -> None:  # type: ignore[override]
+        if self.lang or tag.lower() != "html":
+            return
+        for key, value in attrs:
+            if str(key).lower() == "lang" and value:
+                self.lang = str(value).strip().lower()
+                break
 
 
 def _is_browser_header_host(url: str) -> bool:
@@ -442,21 +463,12 @@ def _is_english_candidate_url(source_name: str, candidate_url: str) -> bool:
 
     parsed = urlparse(candidate_url)
     host = parsed.netloc.lower()
-    path = parsed.path.lower()
+    path = parsed.path.lower() or "/"
     if "bbc.com" not in host:
         return False
-    return not any(marker in path for marker in BBC_NON_ENGLISH_PATH_MARKERS)
-
-
-def _is_probably_english_text(text: str) -> bool:
-    sample = (text or "").strip()
-    if not sample:
+    if any(marker in path for marker in BBC_NON_ENGLISH_PATH_MARKERS):
         return False
-    alpha_chars = [char for char in sample if char.isalpha()]
-    if not alpha_chars:
-        return False
-    ascii_alpha = [char for char in alpha_chars if "a" <= char.lower() <= "z"]
-    return (len(ascii_alpha) / len(alpha_chars)) >= 0.85
+    return any(path == prefix or path.startswith(f"{prefix}/") for prefix in BBC_ENGLISH_NEWS_PATH_PREFIXES)
 
 
 def _discover_articles_by_date(
@@ -565,6 +577,14 @@ def extract_document_title(article_html: str) -> str:
     parser.feed(article_html)
     parser.close()
     return re.sub(r"\s+", " ", unescape(parser.get_title())).strip()
+
+
+def extract_document_lang(article_html: str) -> str:
+    """Extract the lowercase html[lang] value (if present)."""
+    parser = DocumentLangParser()
+    parser.feed(article_html)
+    parser.close()
+    return parser.lang
 
 
 def _tokenize(text: str) -> list[str]:
@@ -1098,9 +1118,13 @@ def scrape_source_articles_by_date(
             if not article_text:
                 diagnostics.append(f"article_parse_empty:{link['url']}")
                 continue
-            if source_key == "bbc" and not _is_probably_english_text(f"{page_title} {article_text[:1000]}"):
-                diagnostics.append(f"filtered_non_english_content:{link['url']}")
-                continue
+            if source_key == "bbc":
+                declared_lang = extract_document_lang(article_html)
+                if not declared_lang.startswith("en"):
+                    diagnostics.append(
+                        f"filtered_non_english_lang_decl:{link['url']}:lang={declared_lang or 'missing'}"
+                    )
+                    continue
 
             tokens = _filter_tokens(article_text)
             if not tokens:
