@@ -152,20 +152,20 @@ if "ap_query_result" not in st.session_state:
     st.session_state.ap_query_result = {}
 if "ap_scrape_feedback" not in st.session_state:
     st.session_state.ap_scrape_feedback = ""
-if "reuters_query_result" not in st.session_state:
-    st.session_state.reuters_query_result = {}
-if "reuters_scrape_feedback" not in st.session_state:
-    st.session_state.reuters_scrape_feedback = ""
+if "bbc_query_result" not in st.session_state:
+    st.session_state.bbc_query_result = {}
+if "bbc_scrape_feedback" not in st.session_state:
+    st.session_state.bbc_scrape_feedback = ""
 if "ap_selected_date" not in st.session_state:
     st.session_state.ap_selected_date = datetime.now(timezone.utc).strftime("%m/%d/%Y")
-if "reuters_selected_date" not in st.session_state:
-    st.session_state.reuters_selected_date = datetime.now(timezone.utc).strftime("%m/%d/%Y")
+if "bbc_selected_date" not in st.session_state:
+    st.session_state.bbc_selected_date = datetime.now(timezone.utc).strftime("%m/%d/%Y")
 
 
 AP_SOURCE_DIRNAME = "apnews-com"
 AP_SCRAPE_FALLBACK_MAX_ARTICLES = 200
-REUTERS_SOURCE_DIRNAME = "www-reuters-com"
-REUTERS_SCRAPE_FALLBACK_MAX_ARTICLES = 200
+BBC_SOURCE_DIRNAME = "www-bbc-com"
+BBC_SCRAPE_FALLBACK_MAX_ARTICLES = 200
 
 
 def _is_ollama_api_alive(host: str) -> bool:
@@ -268,26 +268,26 @@ def _count_locally_scraped_ap_articles() -> int:
     return sum(1 for _ in processed_root.glob("*/*/metadata.json"))
 
 
-def _count_locally_scraped_reuters_articles() -> int:
-    processed_root = REPO_ROOT / "data" / "processed" / REUTERS_SOURCE_DIRNAME
+def _count_locally_scraped_bbc_articles() -> int:
+    processed_root = REPO_ROOT / "data" / "processed" / BBC_SOURCE_DIRNAME
     if not processed_root.exists():
         return 0
     return sum(1 for _ in processed_root.glob("*/*/metadata.json"))
 
 
-def _format_reuters_user_error(error_message: str) -> str:
+def _format_bbc_user_error(error_message: str) -> str:
     normalized = (error_message or "").lower()
     if any(token in normalized for token in ("blocked", "forbidden", "http 401", "http 403", "http 429")):
         return (
-            "Reuters blocked this automated request. "
+            "BBC blocked this automated request. "
             "Try again later; if blocking persists, an alternate discovery path/source may be needed."
         )
     if "no candidate article links" in normalized or "no article links" in normalized:
         return (
-            "Reuters discovery succeeded but no article links were detected from the current discovery pages. "
-            "Try again later or use an alternate Reuters discovery path."
+            "BBC discovery succeeded but no article links were detected from the current discovery pages. "
+            "Try again later or use an alternate BBC discovery path."
         )
-    return error_message or "Reuters request failed."
+    return error_message or "BBC request failed."
 
 
 st.markdown('<section class="hero">', unsafe_allow_html=True)
@@ -432,10 +432,10 @@ with hero_right:
 st.markdown("</section>", unsafe_allow_html=True)
 
 st.markdown('<section class="source-banner">', unsafe_allow_html=True)
-st.markdown('<div class="panel-title">Source Ingestion · AP News + Reuters</div>', unsafe_allow_html=True)
+st.markdown('<div class="panel-title">Source Ingestion · AP News + BBC</div>', unsafe_allow_html=True)
 banner_left, banner_middle, banner_right = st.columns([0.5, 3.2, 0.5], gap="large")
 with banner_middle:
-    ap_col, reuters_col = st.columns(2, gap="large")
+    ap_col, bbc_col = st.columns(2, gap="large")
 
 with ap_col:
     st.markdown(
@@ -534,127 +534,127 @@ with ap_col:
         unsafe_allow_html=True,
     )
 
-with reuters_col:
+with bbc_col:
     st.markdown(
         (
             '<div class="source-card">'
             '<div style="font-size:1.35rem;">🌐</div>'
-            '<div class="source-card-label">Reuters</div>'
+            '<div class="source-card-label">BBC</div>'
             '<div class="source-card-url">Date-based archive discovery</div>'
             "</div>"
         ),
         unsafe_allow_html=True,
     )
 
-    reuters_query_date_col, reuters_query_button_col = st.columns([1.25, 1], gap="small")
-    with reuters_query_date_col:
+    bbc_query_date_col, bbc_query_button_col = st.columns([1.25, 1], gap="small")
+    with bbc_query_date_col:
         st.text_input(
             "Date (MM/DD/YYYY)",
-            key="reuters_selected_date",
+            key="bbc_selected_date",
             label_visibility="collapsed",
             placeholder="MM/DD/YYYY",
         )
-    with reuters_query_button_col:
-        reuters_query_clicked = st.button(
+    with bbc_query_button_col:
+        bbc_query_clicked = st.button(
             "Query Site Article Count",
-            key="reuters_query_site_article_count",
+            key="bbc_query_site_article_count",
             use_container_width=True,
         )
 
-    reuters_scrape_clicked = st.button(
+    bbc_scrape_clicked = st.button(
         "Data Scrape",
-        key="reuters_data_scrape",
+        key="bbc_data_scrape",
         use_container_width=True,
     )
 
-    if reuters_query_clicked:
-        with st.spinner("Querying Reuters archive metadata for selected date..."):
-            st.session_state.reuters_query_result = run_article_count_query_by_date(
-                source_name="reuters",
-                date_str=st.session_state.reuters_selected_date,
+    if bbc_query_clicked:
+        with st.spinner("Querying BBC archive metadata for selected date..."):
+            st.session_state.bbc_query_result = run_article_count_query_by_date(
+                source_name="bbc",
+                date_str=st.session_state.bbc_selected_date,
                 max_links=250,
             )
 
-    if reuters_scrape_clicked:
-        latest_reuters_query = (
-            st.session_state.reuters_query_result if st.session_state.reuters_query_result.get("ok") == "true" else {}
+    if bbc_scrape_clicked:
+        latest_bbc_query = (
+            st.session_state.bbc_query_result if st.session_state.bbc_query_result.get("ok") == "true" else {}
         )
-        requested_reuters_scrape_count = (
-            int(latest_reuters_query.get("links_found", 0)) or REUTERS_SCRAPE_FALLBACK_MAX_ARTICLES
+        requested_bbc_scrape_count = (
+            int(latest_bbc_query.get("links_found", 0)) or BBC_SCRAPE_FALLBACK_MAX_ARTICLES
         )
-        with st.spinner("Running Reuters date-based data scrape..."):
-            reuters_result = run_pipeline_by_date(
-                source_name="reuters",
-                date_str=st.session_state.reuters_selected_date,
-                max_articles=requested_reuters_scrape_count,
+        with st.spinner("Running BBC date-based data scrape..."):
+            bbc_result = run_pipeline_by_date(
+                source_name="bbc",
+                date_str=st.session_state.bbc_selected_date,
+                max_articles=requested_bbc_scrape_count,
             )
-            st.session_state.analysis_result = reuters_result
+            st.session_state.analysis_result = bbc_result
 
-        reuters_ok = reuters_result.get("ok") == "true"
-        if reuters_ok:
-            reuters_scraped = reuters_result.get("articles_scraped", 0)
-            reuters_attempted = reuters_result.get("articles_attempted", 0)
-            st.session_state.reuters_scrape_feedback = (
-                "Reuters scrape complete. "
-                f"Requested: {requested_reuters_scrape_count} · Attempted: {reuters_attempted} · Scraped: {reuters_scraped}."
+        bbc_ok = bbc_result.get("ok") == "true"
+        if bbc_ok:
+            bbc_scraped = bbc_result.get("articles_scraped", 0)
+            bbc_attempted = bbc_result.get("articles_attempted", 0)
+            st.session_state.bbc_scrape_feedback = (
+                "BBC scrape complete. "
+                f"Requested: {requested_bbc_scrape_count} · Attempted: {bbc_attempted} · Scraped: {bbc_scraped}."
             )
         else:
-            st.session_state.reuters_scrape_feedback = _format_reuters_user_error(
-                reuters_result.get("error", "Reuters scrape failed.")
+            st.session_state.bbc_scrape_feedback = _format_bbc_user_error(
+                bbc_result.get("error", "BBC scrape failed.")
             )
 
-    reuters_query_result = st.session_state.reuters_query_result
-    if reuters_query_result:
-        if reuters_query_result.get("ok") == "true":
+    bbc_query_result = st.session_state.bbc_query_result
+    if bbc_query_result:
+        if bbc_query_result.get("ok") == "true":
             st.markdown(
                 (
-                    '<div class="small">Discovery complete · Candidate Reuters article links: '
-                    f"<strong>{reuters_query_result.get('links_found', 0)}</strong></div>"
+                    '<div class="small">Discovery complete · Candidate BBC article links: '
+                    f"<strong>{bbc_query_result.get('links_found', 0)}</strong></div>"
                 ),
                 unsafe_allow_html=True,
             )
-            reuters_preview = reuters_query_result.get("preview", [])
-            if reuters_preview:
+            bbc_preview = bbc_query_result.get("preview", [])
+            if bbc_preview:
                 st.markdown('<div class="small">Preview:</div>', unsafe_allow_html=True)
-                for item in reuters_preview[:5]:
+                for item in bbc_preview[:5]:
                     st.markdown(f"- [{item.get('title', item.get('url', ''))}]({item.get('url', '')})")
         else:
-            st.warning(_format_reuters_user_error(reuters_query_result.get("error", "Reuters count query failed.")))
+            st.warning(_format_bbc_user_error(bbc_query_result.get("error", "BBC count query failed.")))
 
-    reuters_query_diagnostics = reuters_query_result.get("diagnostics", []) if reuters_query_result else []
-    if reuters_query_diagnostics:
+    bbc_query_diagnostics = bbc_query_result.get("diagnostics", []) if bbc_query_result else []
+    if bbc_query_diagnostics:
         st.markdown(
-            f'<div class="small">Diagnostics: {" · ".join(reuters_query_diagnostics[:3])}</div>',
+            f'<div class="small">Diagnostics: {" · ".join(bbc_query_diagnostics[:3])}</div>',
             unsafe_allow_html=True,
         )
 
-    latest_reuters_pipeline = st.session_state.analysis_result if st.session_state.analysis_result else {}
-    if latest_reuters_pipeline.get("fetch_diagnostics") and latest_reuters_pipeline.get("ok") == "true":
-        diagnostics_text = " · ".join(latest_reuters_pipeline.get("fetch_diagnostics", [])[:3])
+    latest_bbc_pipeline = st.session_state.analysis_result if st.session_state.analysis_result else {}
+    if latest_bbc_pipeline.get("fetch_diagnostics") and latest_bbc_pipeline.get("ok") == "true":
+        diagnostics_text = " · ".join(latest_bbc_pipeline.get("fetch_diagnostics", [])[:3])
         st.markdown(f'<div class="small">Scrape diagnostics: {diagnostics_text}</div>', unsafe_allow_html=True)
 
-    if st.session_state.reuters_scrape_feedback:
-        st.markdown(f'<div class="small">{st.session_state.reuters_scrape_feedback}</div>', unsafe_allow_html=True)
-    elif reuters_query_result and reuters_query_result.get("ok") == "true":
+    if st.session_state.bbc_scrape_feedback:
+        st.markdown(f'<div class="small">{st.session_state.bbc_scrape_feedback}</div>', unsafe_allow_html=True)
+    elif bbc_query_result and bbc_query_result.get("ok") == "true":
         st.markdown(
             (
                 '<div class="small">Data Scrape will target the latest discovered count: '
-                f"<strong>{reuters_query_result.get('links_found', 0)}</strong> candidate links.</div>"
+                f"<strong>{bbc_query_result.get('links_found', 0)}</strong> candidate links.</div>"
             ),
             unsafe_allow_html=True,
         )
     st.markdown(
-        f'<div class="small">Selected date: <strong>{st.session_state.reuters_selected_date}</strong></div>',
+        f'<div class="small">Selected date: <strong>{st.session_state.bbc_selected_date}</strong></div>',
         unsafe_allow_html=True,
     )
 
-    reuters_scraped_local_count = _count_locally_scraped_reuters_articles()
-    reuters_discovered_count = reuters_query_result.get("links_found", 0) if reuters_query_result else 0
+    bbc_scraped_local_count = _count_locally_scraped_bbc_articles()
+    bbc_discovered_count = bbc_query_result.get("links_found", 0) if bbc_query_result else 0
     st.markdown(
         (
-            '<div class="small">Reuters corpus status · '
-            f"Discovered (latest query): <strong>{reuters_discovered_count}</strong> · "
-            f"Scraped locally: <strong>{reuters_scraped_local_count}</strong></div>"
+            '<div class="small">BBC corpus status · '
+            f"Discovered (latest query): <strong>{bbc_discovered_count}</strong> · "
+            f"Scraped locally: <strong>{bbc_scraped_local_count}</strong></div>"
         ),
         unsafe_allow_html=True,
     )

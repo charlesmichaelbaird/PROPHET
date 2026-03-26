@@ -80,13 +80,13 @@ SOURCE_DATE_CONFIG = {
             "https://apnews.com/news-sitemap.xml",
         ),
     },
-    "reuters": {
-        "label": "Reuters",
-        "canonical_home": "https://www.reuters.com/",
+    "bbc": {
+        "label": "BBC",
+        "canonical_home": "https://www.bbc.com/",
         "sitemap_indexes": (
-            "https://www.reuters.com/sitemap.xml",
-            "https://www.reuters.com/sitemap_index.xml",
-            "https://www.reuters.com/arc/outboundfeeds/sitemap-index/?output=xml",
+            "https://www.bbc.com/sitemaps/https-index-com-news.xml",
+            "https://www.bbc.com/sitemaps/https-index-com-archive.xml",
+            "https://www.bbc.com/sitemaps/https-news.xml",
         ),
     },
 }
@@ -212,11 +212,16 @@ class DocumentTitleParser(HTMLParser):
         return self.meta_title or title_tag
 
 
+def _is_browser_header_host(url: str) -> bool:
+    host = urlparse(url).netloc.lower()
+    return "reuters.com" in host or "bbc.com" in host
+
+
 def _is_reuters_host(url: str) -> bool:
     return "reuters.com" in urlparse(url).netloc.lower()
 
 
-def _new_reuters_session() -> requests.Session:
+def _new_browser_session() -> requests.Session:
     session = requests.Session()
     session.headers.update(_BROWSER_HEADERS)
     return session
@@ -234,7 +239,7 @@ def fetch_url(
         raise ValueError("URL must include http:// or https:// and a valid host")
 
     request_headers = {"User-Agent": "PROPHET-ZeroCost/1.0 (+https://example.local)"}
-    if _is_reuters_host(url):
+    if _is_browser_header_host(url):
         request_headers.update(_BROWSER_HEADERS)
     if headers:
         request_headers.update(headers)
@@ -317,7 +322,7 @@ def extract_article_links(homepage_html: str, homepage_url: str, max_links: int 
 def _discover_reuters_links(max_links: int) -> tuple[list[dict[str, str]], str, list[str]]:
     """Try Reuters homepage/discovery pages and return first link set found."""
     base_url = "https://www.reuters.com/"
-    session = _new_reuters_session()
+    session = _new_browser_session()
     diagnostics: list[str] = []
 
     for discovery_path in REUTERS_DISCOVERY_PATHS:
@@ -403,7 +408,7 @@ def _discover_articles_by_date(
 ) -> tuple[list[dict[str, str]], list[str], str]:
     config = SOURCE_DATE_CONFIG[source_name]
     diagnostics: list[str] = []
-    session = _new_reuters_session() if source_name == "reuters" else None
+    session = _new_browser_session() if source_name == "bbc" else None
 
     discovered: list[dict[str, str]] = []
     seen: set[str] = set()
@@ -676,7 +681,7 @@ def analyze_homepage(
     ensure_data_directories()
     diagnostics: list[str] = []
     reuters_mode = _is_reuters_host(homepage_url)
-    reuters_session: requests.Session | None = _new_reuters_session() if reuters_mode else None
+    reuters_session: requests.Session | None = _new_browser_session() if reuters_mode else None
     discovery_url = homepage_url
 
     if reuters_mode:
@@ -1006,7 +1011,7 @@ def scrape_source_articles_by_date(
             "Try a different date or retry later."
         )
 
-    session = _new_reuters_session() if source_key == "reuters" else None
+    session = _new_browser_session() if source_key == "bbc" else None
     source_home = SOURCE_DATE_CONFIG[source_key]["canonical_home"]
     attempted_articles = 0
     new_articles_saved = 0
