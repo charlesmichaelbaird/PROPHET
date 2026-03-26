@@ -159,46 +159,70 @@ if "bbc_query_result" not in st.session_state:
     st.session_state.bbc_query_result = {}
 if "bbc_scrape_feedback" not in st.session_state:
     st.session_state.bbc_scrape_feedback = ""
+if "aj_query_result" not in st.session_state:
+    st.session_state.aj_query_result = {}
+if "aj_scrape_feedback" not in st.session_state:
+    st.session_state.aj_scrape_feedback = ""
 if "ap_selected_date" not in st.session_state:
     st.session_state.ap_selected_date = datetime.now(timezone.utc).strftime("%m/%d/%Y")
 if "bbc_selected_date" not in st.session_state:
     st.session_state.bbc_selected_date = datetime.now(timezone.utc).strftime("%m/%d/%Y")
+if "aj_selected_date" not in st.session_state:
+    st.session_state.aj_selected_date = datetime.now(timezone.utc).strftime("%m/%d/%Y")
 if "ap_scrape_active" not in st.session_state:
     st.session_state.ap_scrape_active = False
 if "bbc_scrape_active" not in st.session_state:
     st.session_state.bbc_scrape_active = False
+if "aj_scrape_active" not in st.session_state:
+    st.session_state.aj_scrape_active = False
 if "ap_scrape_thread" not in st.session_state:
     st.session_state.ap_scrape_thread = None
 if "bbc_scrape_thread" not in st.session_state:
     st.session_state.bbc_scrape_thread = None
+if "aj_scrape_thread" not in st.session_state:
+    st.session_state.aj_scrape_thread = None
 if "ap_scrape_queue" not in st.session_state:
     st.session_state.ap_scrape_queue = Queue()
 if "bbc_scrape_queue" not in st.session_state:
     st.session_state.bbc_scrape_queue = Queue()
+if "aj_scrape_queue" not in st.session_state:
+    st.session_state.aj_scrape_queue = Queue()
 if "ap_stop_requested" not in st.session_state:
     st.session_state.ap_stop_requested = False
 if "bbc_stop_requested" not in st.session_state:
     st.session_state.bbc_stop_requested = False
+if "aj_stop_requested" not in st.session_state:
+    st.session_state.aj_stop_requested = False
 if "ap_scrape_started_at" not in st.session_state:
     st.session_state.ap_scrape_started_at = 0.0
 if "bbc_scrape_started_at" not in st.session_state:
     st.session_state.bbc_scrape_started_at = 0.0
+if "aj_scrape_started_at" not in st.session_state:
+    st.session_state.aj_scrape_started_at = 0.0
 if "ap_scrape_status" not in st.session_state:
     st.session_state.ap_scrape_status = "idle"
 if "bbc_scrape_status" not in st.session_state:
     st.session_state.bbc_scrape_status = "idle"
+if "aj_scrape_status" not in st.session_state:
+    st.session_state.aj_scrape_status = "idle"
 if "ap_scrape_progress" not in st.session_state:
     st.session_state.ap_scrape_progress = {}
 if "bbc_scrape_progress" not in st.session_state:
     st.session_state.bbc_scrape_progress = {}
+if "aj_scrape_progress" not in st.session_state:
+    st.session_state.aj_scrape_progress = {}
 if "ap_last_elapsed_seconds" not in st.session_state:
     st.session_state.ap_last_elapsed_seconds = 0
 if "bbc_last_elapsed_seconds" not in st.session_state:
     st.session_state.bbc_last_elapsed_seconds = 0
+if "aj_last_elapsed_seconds" not in st.session_state:
+    st.session_state.aj_last_elapsed_seconds = 0
 if "ap_index_feedback" not in st.session_state:
     st.session_state.ap_index_feedback = {}
 if "bbc_index_feedback" not in st.session_state:
     st.session_state.bbc_index_feedback = {}
+if "aj_index_feedback" not in st.session_state:
+    st.session_state.aj_index_feedback = {}
 if "last_live_refresh_at" not in st.session_state:
     st.session_state.last_live_refresh_at = 0.0
 
@@ -209,6 +233,9 @@ BBC_SOURCE_DIRNAME = "www-bbc-com"
 BBC_SCRAPE_FALLBACK_MAX_ARTICLES = 200
 AP_INDEX_PARTITION = "ap-news"
 BBC_INDEX_PARTITION = "bbc"
+AJ_SOURCE_DIRNAME = "www-aljazeera-com"
+AJ_SCRAPE_FALLBACK_MAX_ARTICLES = 200
+AJ_INDEX_PARTITION = "aljazeera-com"
 
 
 def _start_date_scrape_worker(source_name: str, date_str: str, max_articles: int, queue_key: str) -> None:
@@ -477,6 +504,18 @@ def _count_locally_scraped_bbc_articles() -> int:
     return sum(1 for _ in processed_root.glob("*/*/metadata.json"))
 
 
+def _count_locally_scraped_aj_articles() -> int:
+    processed_root = REPO_ROOT / "data" / "processed" / AJ_SOURCE_DIRNAME
+    if not processed_root.exists():
+        return 0
+    return sum(1 for _ in processed_root.glob("*/*/metadata.json"))
+
+
+def _indexed_count_for_source(index_status_payload: dict, source_partition: str) -> int:
+    source_counts = index_status_payload.get("indexed_counts_by_source", {}) or {}
+    return int(source_counts.get(source_partition, 0))
+
+
 def _format_bbc_user_error(error_message: str) -> str:
     normalized = (error_message or "").lower()
     if any(token in normalized for token in ("blocked", "forbidden", "http 401", "http 403", "http 429")):
@@ -640,10 +679,10 @@ with hero_right:
 st.markdown("</section>", unsafe_allow_html=True)
 
 st.markdown('<section class="source-banner">', unsafe_allow_html=True)
-st.markdown('<div class="panel-title">Source Ingestion · AP News + BBC</div>', unsafe_allow_html=True)
+st.markdown('<div class="panel-title">Source Ingestion · AP News + BBC + Al Jazeera English</div>', unsafe_allow_html=True)
 banner_left, banner_middle, banner_right = st.columns([0.5, 3.2, 0.5], gap="large")
 with banner_middle:
-    ap_col, bbc_col = st.columns(2, gap="large")
+    ap_col, bbc_col, aj_col = st.columns(3, gap="large")
 
 with ap_col:
     st.markdown(
@@ -784,11 +823,13 @@ with ap_col:
 
     scraped_local_count = _count_locally_scraped_ap_articles()
     discovered_count = query_result.get("links_found", 0) if query_result else 0
+    ap_indexed_count = _indexed_count_for_source(index_status, AP_INDEX_PARTITION)
     st.markdown(
         (
             '<div class="small">AP corpus status · '
             f"Discovered (latest query): <strong>{discovered_count}</strong> · "
-            f"Scraped locally: <strong>{scraped_local_count}</strong></div>"
+            f"Scraped locally: <strong>{scraped_local_count}</strong> · "
+            f"Indexed: <strong>{ap_indexed_count}</strong></div>"
         ),
         unsafe_allow_html=True,
     )
@@ -954,11 +995,13 @@ with bbc_col:
 
     bbc_scraped_local_count = _count_locally_scraped_bbc_articles()
     bbc_discovered_count = bbc_query_result.get("links_found", 0) if bbc_query_result else 0
+    bbc_indexed_count = _indexed_count_for_source(index_status, BBC_INDEX_PARTITION)
     st.markdown(
         (
             '<div class="small">BBC corpus status · '
             f"Discovered (latest query): <strong>{bbc_discovered_count}</strong> · "
-            f"Scraped locally: <strong>{bbc_scraped_local_count}</strong></div>"
+            f"Scraped locally: <strong>{bbc_scraped_local_count}</strong> · "
+            f"Indexed: <strong>{bbc_indexed_count}</strong></div>"
         ),
         unsafe_allow_html=True,
     )
@@ -974,9 +1017,175 @@ with bbc_col:
             ),
             unsafe_allow_html=True,
         )
+
+with aj_col:
+    st.markdown(
+        (
+            '<div class="source-card">'
+            '<div style="font-size:1.35rem;">🛰️</div>'
+            '<div class="source-card-label">Al Jazeera English</div>'
+            '<div class="source-card-url">Date-based archive discovery</div>'
+            "</div>"
+        ),
+        unsafe_allow_html=True,
+    )
+
+    aj_query_date_col, aj_query_button_col = st.columns([1.25, 1], gap="small")
+    with aj_query_date_col:
+        st.text_input(
+            "Date (MM/DD/YYYY)",
+            key="aj_selected_date",
+            label_visibility="collapsed",
+            placeholder="MM/DD/YYYY",
+        )
+    with aj_query_button_col:
+        aj_query_clicked = st.button(
+            "Query Site Article Count",
+            key="aj_query_site_article_count",
+            use_container_width=True,
+        )
+
+    aj_scrape_active = bool(st.session_state.aj_scrape_active)
+    aj_action_col_left, aj_action_col_right = st.columns(2, gap="small")
+    with aj_action_col_left:
+        aj_scrape_clicked = st.button(
+            "Stop Scraping" if aj_scrape_active else "Data Scrape",
+            key="aj_data_scrape",
+            use_container_width=True,
+        )
+    with aj_action_col_right:
+        aj_index_clicked = st.button(
+            "Index Data",
+            key="aj_index_data_btn",
+            use_container_width=True,
+            disabled=not model_discovery.get("available"),
+        )
+
+    if aj_query_clicked:
+        st.session_state.aj_scrape_status = "querying/discovering"
+        with st.spinner("Querying Al Jazeera archive metadata for selected date..."):
+            st.session_state.aj_query_result = run_article_count_query_by_date(
+                source_name="aljazeera",
+                date_str=st.session_state.aj_selected_date,
+                max_links=250,
+            )
+
+    if aj_scrape_clicked and not aj_scrape_active:
+        latest_aj_query = st.session_state.aj_query_result if st.session_state.aj_query_result.get("ok") == "true" else {}
+        requested_aj_scrape_count = int(latest_aj_query.get("links_found", 0)) or AJ_SCRAPE_FALLBACK_MAX_ARTICLES
+        st.session_state.aj_scrape_feedback = "Al Jazeera scrape active..."
+        _start_date_scrape_worker(
+            source_name="aljazeera",
+            date_str=st.session_state.aj_selected_date,
+            max_articles=requested_aj_scrape_count,
+            queue_key="aj_scrape_queue",
+        )
+    elif aj_scrape_clicked and aj_scrape_active:
+        run_stop_pipeline_by_date(source_name="aljazeera")
+        st.session_state.aj_stop_requested = True
+        st.session_state.aj_scrape_status = "stopped"
+        st.session_state.aj_scrape_feedback = "Stopping Al Jazeera scrape..."
+
+    if aj_index_clicked:
+        st.session_state.aj_index_feedback = _run_source_indexing(
+            source_partition=AJ_INDEX_PARTITION,
+            source_label="Al Jazeera English",
+        )
+
+    aj_result = _poll_date_scrape_result("aljazeera", "aj_scrape_queue")
+    if aj_result is not None:
+        st.session_state.analysis_result = aj_result
+        st.session_state.aj_scrape_active = False
+        st.session_state.aj_scrape_thread = None
+        if st.session_state.aj_scrape_started_at:
+            st.session_state.aj_last_elapsed_seconds = int(time.time() - st.session_state.aj_scrape_started_at)
+        st.session_state.aj_scrape_started_at = 0.0
+        aj_ok = aj_result.get("ok") == "true"
+        if aj_ok:
+            aj_scraped = aj_result.get("articles_scraped", 0)
+            aj_attempted = aj_result.get("articles_attempted", 0)
+            if aj_result.get("scrape_stopped_by_user"):
+                st.session_state.aj_scrape_status = "stopped"
+                st.session_state.aj_scrape_feedback = (
+                    "Scrape stopped by user. "
+                    f"Attempted: {aj_attempted} · Scraped: {aj_scraped} · Elapsed: {_format_elapsed(st.session_state.aj_last_elapsed_seconds)}."
+                )
+            else:
+                st.session_state.aj_scrape_status = "completed"
+                st.session_state.aj_scrape_feedback = (
+                    "Al Jazeera scrape complete. "
+                    f"Attempted: {aj_attempted} · Scraped: {aj_scraped} · Elapsed: {_format_elapsed(st.session_state.aj_last_elapsed_seconds)}."
+                )
+        else:
+            st.session_state.aj_scrape_status = "idle"
+            st.session_state.aj_scrape_feedback = aj_result.get("error", "Al Jazeera scrape failed.")
+
+    aj_query_result = st.session_state.aj_query_result
+    if aj_query_result:
+        if aj_query_result.get("ok") == "true":
+            st.markdown(
+                (
+                    '<div class="small">Discovery complete · Candidate Al Jazeera links: '
+                    f"<strong>{aj_query_result.get('links_found', 0)}</strong></div>"
+                ),
+                unsafe_allow_html=True,
+            )
+            aj_preview = aj_query_result.get("preview", [])
+            if aj_preview:
+                st.markdown('<div class="small">Preview:</div>', unsafe_allow_html=True)
+                for item in aj_preview[:5]:
+                    st.markdown(f"- [{item.get('title', item.get('url', ''))}]({item.get('url', '')})")
+        else:
+            st.warning(aj_query_result.get("error", "Al Jazeera count query failed."))
+
+    st.markdown(
+        f'<div class="small">Scrape status: <strong>{st.session_state.aj_scrape_status}</strong></div>',
+        unsafe_allow_html=True,
+    )
+    if st.session_state.aj_scrape_active:
+        _render_scrape_loading_bar("aljazeera")
+    if st.session_state.aj_scrape_feedback:
+        st.markdown(f'<div class="small">{st.session_state.aj_scrape_feedback}</div>', unsafe_allow_html=True)
+    elif aj_query_result and aj_query_result.get("ok") == "true":
+        st.markdown(
+            (
+                '<div class="small">Data Scrape will target the latest discovered count: '
+                f"<strong>{aj_query_result.get('links_found', 0)}</strong> candidate links.</div>"
+            ),
+            unsafe_allow_html=True,
+        )
+    st.markdown(
+        f'<div class="small">Selected date: <strong>{st.session_state.aj_selected_date}</strong></div>',
+        unsafe_allow_html=True,
+    )
+
+    aj_scraped_local_count = _count_locally_scraped_aj_articles()
+    aj_discovered_count = aj_query_result.get("links_found", 0) if aj_query_result else 0
+    aj_indexed_count = _indexed_count_for_source(index_status, AJ_INDEX_PARTITION)
+    st.markdown(
+        (
+            '<div class="small">Al Jazeera corpus status · '
+            f"Discovered (latest query): <strong>{aj_discovered_count}</strong> · "
+            f"Scraped locally: <strong>{aj_scraped_local_count}</strong> · "
+            f"Indexed: <strong>{aj_indexed_count}</strong></div>"
+        ),
+        unsafe_allow_html=True,
+    )
+    aj_index_feedback = st.session_state.aj_index_feedback
+    if aj_index_feedback:
+        aj_eligible = int(aj_index_feedback.get("eligible_for_indexing", aj_index_feedback.get("new_articles_indexed", 0)))
+        aj_indexed = int(aj_index_feedback.get("new_articles_indexed", 0))
+        st.markdown(
+            (
+                '<div class="small">Al Jazeera index update · '
+                f"Indexed: <strong>{aj_indexed}</strong> / <strong>{aj_eligible}</strong> · "
+                f"Remaining: <strong>{max(aj_eligible - aj_indexed, 0)}</strong></div>"
+            ),
+            unsafe_allow_html=True,
+        )
 st.markdown("</section>", unsafe_allow_html=True)
 
-if st.session_state.ap_scrape_active or st.session_state.bbc_scrape_active:
+if st.session_state.ap_scrape_active or st.session_state.bbc_scrape_active or st.session_state.aj_scrape_active:
     now_ts = time.time()
     if now_ts - float(st.session_state.last_live_refresh_at or 0.0) >= 1.0:
         st.session_state.last_live_refresh_at = now_ts

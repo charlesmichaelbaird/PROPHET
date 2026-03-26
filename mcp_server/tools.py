@@ -76,6 +76,15 @@ SOURCE_DATE_CONFIG = {
             "https://www.bbc.com/sitemaps/https-news.xml",
         ),
     },
+    "aljazeera": {
+        "label": "Al Jazeera English",
+        "canonical_home": "https://www.aljazeera.com/",
+        "sitemap_indexes": (
+            "https://www.aljazeera.com/sitemaps.xml",
+            "https://www.aljazeera.com/sitemaps/post-sitemap.xml",
+            "https://www.aljazeera.com/sitemaps/news-sitemap.xml",
+        ),
+    },
 }
 
 BBC_NON_ENGLISH_PATH_MARKERS = (
@@ -121,6 +130,7 @@ BBC_ENGLISH_NEWS_PATH_PREFIXES = (
 _SCRAPE_CANCEL_EVENTS: dict[str, Event] = {
     "ap": Event(),
     "bbc": Event(),
+    "aljazeera": Event(),
 }
 
 
