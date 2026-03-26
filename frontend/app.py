@@ -5,9 +5,11 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import os
 from pathlib import Path
+from queue import Empty, Queue
 import signal
 import subprocess
 import sys
+import threading
 import time
 
 import pandas as pd
@@ -24,6 +26,7 @@ from mcp_server.server import (
     run_article_count_query_by_date,
     run_ask_the_prophet,
     run_pipeline_by_date,
+    run_stop_pipeline_by_date,
 )
 from mcp_server.rag import discover_ollama_models, get_indexing_status, ingest_new_articles
 from frontend.btc_data import fetch_btc_history, fetch_spot_btc_price
@@ -160,12 +163,64 @@ if "ap_selected_date" not in st.session_state:
     st.session_state.ap_selected_date = datetime.now(timezone.utc).strftime("%m/%d/%Y")
 if "bbc_selected_date" not in st.session_state:
     st.session_state.bbc_selected_date = datetime.now(timezone.utc).strftime("%m/%d/%Y")
+if "ap_scrape_active" not in st.session_state:
+    st.session_state.ap_scrape_active = False
+if "bbc_scrape_active" not in st.session_state:
+    st.session_state.bbc_scrape_active = False
+if "ap_scrape_thread" not in st.session_state:
+    st.session_state.ap_scrape_thread = None
+if "bbc_scrape_thread" not in st.session_state:
+    st.session_state.bbc_scrape_thread = None
+if "ap_scrape_queue" not in st.session_state:
+    st.session_state.ap_scrape_queue = Queue()
+if "bbc_scrape_queue" not in st.session_state:
+    st.session_state.bbc_scrape_queue = Queue()
+if "ap_stop_requested" not in st.session_state:
+    st.session_state.ap_stop_requested = False
+if "bbc_stop_requested" not in st.session_state:
+    st.session_state.bbc_stop_requested = False
+if "ap_scrape_started_at" not in st.session_state:
+    st.session_state.ap_scrape_started_at = 0.0
+if "bbc_scrape_started_at" not in st.session_state:
+    st.session_state.bbc_scrape_started_at = 0.0
 
 
 AP_SOURCE_DIRNAME = "apnews-com"
 AP_SCRAPE_FALLBACK_MAX_ARTICLES = 200
 BBC_SOURCE_DIRNAME = "www-bbc-com"
 BBC_SCRAPE_FALLBACK_MAX_ARTICLES = 200
+
+
+def _start_date_scrape_worker(source_name: str, date_str: str, max_articles: int, queue_key: str) -> None:
+    queue_obj = st.session_state[queue_key]
+
+    def _runner() -> None:
+        result = run_pipeline_by_date(source_name=source_name, date_str=date_str, max_articles=max_articles)
+        queue_obj.put(result)
+
+    thread = threading.Thread(target=_runner, daemon=True)
+    thread.start()
+    st.session_state[f"{source_name}_scrape_thread"] = thread
+    st.session_state[f"{source_name}_scrape_active"] = True
+    st.session_state[f"{source_name}_stop_requested"] = False
+    st.session_state[f"{source_name}_scrape_started_at"] = time.time()
+
+
+def _poll_date_scrape_result(source_name: str, queue_key: str) -> dict | None:
+    queue_obj = st.session_state[queue_key]
+    try:
+        return queue_obj.get_nowait()
+    except Empty:
+        return None
+
+
+def _render_scrape_loading_bar(source_name: str) -> None:
+    started_at = float(st.session_state.get(f"{source_name}_scrape_started_at", 0.0) or 0.0)
+    elapsed = max(time.time() - started_at, 0.0) if started_at else 0.0
+    # Pulsing-style progress: visually conveys active scrape even without article-level callbacks.
+    pct = int(15 + ((elapsed * 12) % 70))
+    st.progress(pct)
+    st.markdown(f'<div class="small">Scrape in progress · elapsed: <strong>{elapsed:.1f}s</strong></div>', unsafe_allow_html=True)
 
 
 def _is_ollama_api_alive(host: str) -> bool:
@@ -292,6 +347,8 @@ def _format_bbc_user_error(error_message: str) -> str:
 
 st.markdown('<section class="hero">', unsafe_allow_html=True)
 _ensure_ollama_runtime_started(st.session_state.ollama_host)
+model_discovery = discover_ollama_models(base_url=st.session_state.ollama_host, timeout_seconds=2.5)
+st.session_state.ollama_model_discovery = model_discovery
 hero_left, hero_middle, hero_right = st.columns([2.5, 1.8, 1.2], gap="medium")
 with hero_left:
     st.markdown('<p class="brand">PROPHET</p>', unsafe_allow_html=True)
@@ -304,12 +361,45 @@ with hero_left:
         unsafe_allow_html=True,
     )
     render_meta_chips()
+    index_status = get_indexing_status(embedding_model=st.session_state.selected_embedding_model)
+    st.markdown(
+        (
+            '<div class="small">Local runtime: Ollama + SQLite index · '
+            f"Processed articles: <strong>{index_status.get('processed_articles_total', 0)}</strong> · "
+            f"Indexed articles: <strong>{index_status.get('indexed_articles_total', 0)}</strong> · "
+            f"Up to date: <strong>{'Yes' if index_status.get('is_index_up_to_date') else 'No'}</strong> · "
+            f"Ollama available: <strong>{'Yes' if model_discovery.get('available') else 'No'}</strong></div>"
+        ),
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        (
+            '<div class="small">Selected Embedding Model: '
+            f"<strong>{st.session_state.selected_embedding_model or 'None'}</strong> · "
+            'Selected Answer Model: '
+            f"<strong>{st.session_state.selected_answer_model or 'None'}</strong></div>"
+        ),
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        (
+            '<div class="small">Active model index root: '
+            f"<strong>{index_status.get('active_model_index_root', 'N/A')}</strong></div>"
+        ),
+        unsafe_allow_html=True,
+    )
+    source_counts = index_status.get("indexed_counts_by_source", {}) or {}
+    if source_counts:
+        st.markdown(
+            '<div class="small">Indexed by source (active model): '
+            + " · ".join(f"{source}: {count}" for source, count in sorted(source_counts.items()))
+            + "</div>",
+            unsafe_allow_html=True,
+        )
 
 with hero_middle:
     st.markdown('<div class="panel">', unsafe_allow_html=True)
     st.markdown('<div class="panel-title">Local Runtime Models</div>', unsafe_allow_html=True)
-    model_discovery = discover_ollama_models(base_url=st.session_state.ollama_host, timeout_seconds=2.5)
-    st.session_state.ollama_model_discovery = model_discovery
     available_models = model_discovery.get("models", [])
     embed_candidates = model_discovery.get("embedding_candidates", []) or available_models
     answer_candidates = model_discovery.get("answer_candidates", []) or available_models
@@ -488,7 +578,12 @@ with ap_col:
     with ap_query_button_col:
         query_clicked = st.button("Query Site Article Count", use_container_width=True, key="ap_query_btn")
 
-    scrape_clicked = st.button("Data Scrape", use_container_width=True)
+    ap_scrape_active = bool(st.session_state.ap_scrape_active)
+    scrape_clicked = st.button(
+        "Stop Scraping" if ap_scrape_active else "Data Scrape",
+        use_container_width=True,
+        key="ap_data_scrape_btn",
+    )
 
     if query_clicked:
         with st.spinner("Querying AP News archive metadata for selected date..."):
@@ -498,25 +593,43 @@ with ap_col:
                 max_links=250,
             )
 
-    if scrape_clicked:
+    if scrape_clicked and not ap_scrape_active:
         latest_query = st.session_state.ap_query_result if st.session_state.ap_query_result.get("ok") == "true" else {}
         requested_scrape_count = int(latest_query.get("links_found", 0)) or AP_SCRAPE_FALLBACK_MAX_ARTICLES
-        with st.spinner("Running AP News date-based data scrape..."):
-            st.session_state.analysis_result = run_pipeline_by_date(
-                source_name="ap",
-                date_str=st.session_state.ap_selected_date,
-                max_articles=requested_scrape_count,
-            )
-        result_ok = st.session_state.analysis_result.get("ok") == "true"
-        if result_ok:
-            scraped = st.session_state.analysis_result.get("articles_scraped", 0)
-            attempted = st.session_state.analysis_result.get("articles_attempted", 0)
-            st.session_state.ap_scrape_feedback = (
-                "AP News scrape complete. "
-                f"Requested: {requested_scrape_count} · Attempted: {attempted} · Scraped: {scraped}."
-            )
+        st.session_state.ap_scrape_feedback = "AP News scrape active..."
+        _start_date_scrape_worker(
+            source_name="ap",
+            date_str=st.session_state.ap_selected_date,
+            max_articles=requested_scrape_count,
+            queue_key="ap_scrape_queue",
+        )
+    elif scrape_clicked and ap_scrape_active:
+        run_stop_pipeline_by_date(source_name="ap")
+        st.session_state.ap_stop_requested = True
+        st.session_state.ap_scrape_feedback = "Stopping AP News scrape..."
+
+    ap_result = _poll_date_scrape_result("ap", "ap_scrape_queue")
+    if ap_result is not None:
+        st.session_state.analysis_result = ap_result
+        st.session_state.ap_scrape_active = False
+        st.session_state.ap_scrape_thread = None
+        st.session_state.ap_scrape_started_at = 0.0
+        ap_ok = ap_result.get("ok") == "true"
+        if ap_ok:
+            scraped = ap_result.get("articles_scraped", 0)
+            attempted = ap_result.get("articles_attempted", 0)
+            if ap_result.get("scrape_stopped_by_user"):
+                st.session_state.ap_scrape_feedback = (
+                    "Scrape stopped by user. "
+                    f"Attempted: {attempted} · Scraped: {scraped}."
+                )
+            else:
+                st.session_state.ap_scrape_feedback = (
+                    "AP News scrape complete. "
+                    f"Attempted: {attempted} · Scraped: {scraped}."
+                )
         else:
-            st.session_state.ap_scrape_feedback = st.session_state.analysis_result.get("error", "AP News scrape failed.")
+            st.session_state.ap_scrape_feedback = ap_result.get("error", "AP News scrape failed.")
 
     query_result = st.session_state.ap_query_result
     if query_result:
@@ -536,6 +649,9 @@ with ap_col:
         else:
             st.warning(query_result.get("error", "AP News count query failed."))
 
+    if st.session_state.ap_scrape_active:
+        st.markdown('<div class="small"><strong>Scrape active…</strong></div>', unsafe_allow_html=True)
+        _render_scrape_loading_bar("ap")
     if st.session_state.ap_scrape_feedback:
         st.markdown(f'<div class="small">{st.session_state.ap_scrape_feedback}</div>', unsafe_allow_html=True)
     elif query_result and query_result.get("ok") == "true":
@@ -589,8 +705,9 @@ with bbc_col:
             use_container_width=True,
         )
 
+    bbc_scrape_active = bool(st.session_state.bbc_scrape_active)
     bbc_scrape_clicked = st.button(
-        "Data Scrape",
+        "Stop Scraping" if bbc_scrape_active else "Data Scrape",
         key="bbc_data_scrape",
         use_container_width=True,
     )
@@ -603,29 +720,44 @@ with bbc_col:
                 max_links=250,
             )
 
-    if bbc_scrape_clicked:
+    if bbc_scrape_clicked and not bbc_scrape_active:
         latest_bbc_query = (
             st.session_state.bbc_query_result if st.session_state.bbc_query_result.get("ok") == "true" else {}
         )
         requested_bbc_scrape_count = (
             int(latest_bbc_query.get("links_found", 0)) or BBC_SCRAPE_FALLBACK_MAX_ARTICLES
         )
-        with st.spinner("Running BBC date-based data scrape..."):
-            bbc_result = run_pipeline_by_date(
-                source_name="bbc",
-                date_str=st.session_state.bbc_selected_date,
-                max_articles=requested_bbc_scrape_count,
-            )
-            st.session_state.analysis_result = bbc_result
+        st.session_state.bbc_scrape_feedback = "BBC scrape active..."
+        _start_date_scrape_worker(
+            source_name="bbc",
+            date_str=st.session_state.bbc_selected_date,
+            max_articles=requested_bbc_scrape_count,
+            queue_key="bbc_scrape_queue",
+        )
+    elif bbc_scrape_clicked and bbc_scrape_active:
+        run_stop_pipeline_by_date(source_name="bbc")
+        st.session_state.bbc_stop_requested = True
+        st.session_state.bbc_scrape_feedback = "Stopping BBC scrape..."
 
+    bbc_result = _poll_date_scrape_result("bbc", "bbc_scrape_queue")
+    if bbc_result is not None:
+        st.session_state.analysis_result = bbc_result
+        st.session_state.bbc_scrape_active = False
+        st.session_state.bbc_scrape_thread = None
+        st.session_state.bbc_scrape_started_at = 0.0
         bbc_ok = bbc_result.get("ok") == "true"
         if bbc_ok:
             bbc_scraped = bbc_result.get("articles_scraped", 0)
             bbc_attempted = bbc_result.get("articles_attempted", 0)
-            st.session_state.bbc_scrape_feedback = (
-                "BBC scrape complete. "
-                f"Requested: {requested_bbc_scrape_count} · Attempted: {bbc_attempted} · Scraped: {bbc_scraped}."
-            )
+            if bbc_result.get("scrape_stopped_by_user"):
+                st.session_state.bbc_scrape_feedback = (
+                    f"Scrape stopped by user. Attempted: {bbc_attempted} · Scraped: {bbc_scraped}."
+                )
+            else:
+                st.session_state.bbc_scrape_feedback = (
+                    "BBC scrape complete. "
+                    f"Attempted: {bbc_attempted} · Scraped: {bbc_scraped}."
+                )
         else:
             st.session_state.bbc_scrape_feedback = _format_bbc_user_error(
                 bbc_result.get("error", "BBC scrape failed.")
@@ -661,6 +793,9 @@ with bbc_col:
         diagnostics_text = " · ".join(latest_bbc_pipeline.get("fetch_diagnostics", [])[:3])
         st.markdown(f'<div class="small">Scrape diagnostics: {diagnostics_text}</div>', unsafe_allow_html=True)
 
+    if st.session_state.bbc_scrape_active:
+        st.markdown('<div class="small"><strong>Scrape active…</strong></div>', unsafe_allow_html=True)
+        _render_scrape_loading_bar("bbc")
     if st.session_state.bbc_scrape_feedback:
         st.markdown(f'<div class="small">{st.session_state.bbc_scrape_feedback}</div>', unsafe_allow_html=True)
     elif bbc_query_result and bbc_query_result.get("ok") == "true":
@@ -705,42 +840,7 @@ def render_prophet_dashboard() -> None:
         ask_clicked = st.button("Ask The Prophet", use_container_width=True)
 
         result = st.session_state.analysis_result
-        index_status = get_indexing_status(embedding_model=st.session_state.selected_embedding_model)
         model_discovery = st.session_state.ollama_model_discovery or {}
-        st.markdown(
-            (
-                '<div class="small">Local runtime: Ollama + SQLite index · '
-                f"Processed articles: <strong>{index_status.get('processed_articles_total', 0)}</strong> · "
-                f"Indexed articles: <strong>{index_status.get('indexed_articles_total', 0)}</strong> · "
-                f"Up to date: <strong>{'Yes' if index_status.get('is_index_up_to_date') else 'No'}</strong> · "
-                f"Ollama available: <strong>{'Yes' if model_discovery.get('available') else 'No'}</strong></div>"
-            ),
-            unsafe_allow_html=True,
-        )
-        st.markdown(
-            (
-                '<div class="small">Selected Embedding Model: '
-                f"<strong>{st.session_state.selected_embedding_model or 'None'}</strong> · "
-                'Selected Answer Model: '
-                f"<strong>{st.session_state.selected_answer_model or 'None'}</strong></div>"
-            ),
-            unsafe_allow_html=True,
-        )
-        st.markdown(
-            (
-                '<div class="small">Active model index root: '
-                f"<strong>{index_status.get('active_model_index_root', 'N/A')}</strong></div>"
-            ),
-            unsafe_allow_html=True,
-        )
-        source_counts = index_status.get("indexed_counts_by_source", {}) or {}
-        if source_counts:
-            st.markdown(
-                '<div class="small">Indexed by source (active model): '
-                + " · ".join(f"{source}: {count}" for source, count in sorted(source_counts.items()))
-                + "</div>",
-                unsafe_allow_html=True,
-            )
         if not model_discovery.get("available") and model_discovery.get("error"):
             st.warning(model_discovery.get("error"))
         if ask_clicked:
