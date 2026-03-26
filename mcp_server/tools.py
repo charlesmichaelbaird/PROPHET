@@ -99,6 +99,18 @@ SOURCE_DATE_CONFIG = {
             "https://www.propublica.org/sitemap-news.xml",
         ),
     },
+    "pbs": {
+        "label": "PBS NewsHour",
+        "canonical_home": "https://www.pbs.org/newshour/",
+        "sitemap_indexes": (
+            "https://www.pbs.org/newshour/sitemaps/sitemap.xml",
+            "https://www.pbs.org/newshour/sitemap_index.xml",
+            "https://www.pbs.org/newshour/wp-sitemap.xml",
+        ),
+        "rss_fallbacks": (
+            "https://www.pbs.org/newshour/feeds/rss/headlines",
+        ),
+    },
 }
 
 BBC_NON_ENGLISH_PATH_MARKERS = (
@@ -145,6 +157,7 @@ _SCRAPE_CANCEL_EVENTS: dict[str, Event] = {
     "ap": Event(),
     "bbc": Event(),
     "aljazeera": Event(),
+    "pbs": Event(),
     "propublica": Event(),
 }
 
@@ -330,7 +343,13 @@ def _extract_published_datetime(article_html: str) -> str:
 
 def _is_browser_header_host(url: str) -> bool:
     host = urlparse(url).netloc.lower()
-    return "reuters.com" in host or "bbc.com" in host or "aljazeera.com" in host or "propublica.org" in host
+    return (
+        "reuters.com" in host
+        or "bbc.com" in host
+        or "aljazeera.com" in host
+        or "propublica.org" in host
+        or "pbs.org" in host
+    )
 
 
 def _is_reuters_host(url: str) -> bool:
@@ -535,6 +554,17 @@ def _sitemap_url_targets_date(sitemap_url: str, target_date: datetime, max_lag_d
 
 
 def _is_english_candidate_url(source_name: str, candidate_url: str) -> bool:
+    if source_name == "pbs":
+        parsed = urlparse(candidate_url)
+        host = parsed.netloc.lower()
+        path = parsed.path.lower() or "/"
+        if "pbs.org" not in host:
+            return False
+        if "/newshour/" not in path:
+            return False
+        blocked_markers = ("/video/", "/podcasts/", "/shows/", "/tag/", "/authors/")
+        return not any(marker in path for marker in blocked_markers)
+
     if source_name == "propublica":
         parsed = urlparse(candidate_url)
         host = parsed.netloc.lower()
@@ -621,6 +651,68 @@ def _discover_aljazeera_rss_by_date(query_date: datetime, max_links: int) -> tup
     return discovered, diagnostics, selected_feed
 
 
+def _discover_pbs_rss_by_date(query_date: datetime, max_links: int) -> tuple[list[dict[str, str]], list[str], str]:
+    diagnostics: list[str] = []
+    discovered: list[dict[str, str]] = []
+    seen: set[str] = set()
+    rss_candidates = SOURCE_DATE_CONFIG["pbs"].get("rss_fallbacks", ())
+    session = _new_browser_session()
+    selected_feed = ""
+
+    for rss_url in rss_candidates:
+        selected_feed = rss_url
+        try:
+            rss_xml = fetch_url(rss_url, timeout=14, session=session)
+            root = ET.fromstring(rss_xml)
+        except Exception as exc:
+            diagnostics.append(f"rss_fetch_failed:{rss_url}:{exc}")
+            continue
+
+        items = root.findall(".//item")
+        if not items:
+            diagnostics.append(f"rss_no_items:{rss_url}")
+            continue
+
+        matched = 0
+        for item in items:
+            link_text = (item.findtext("link") or "").strip()
+            title = (item.findtext("title") or link_text).strip()
+            pub_date = (item.findtext("pubDate") or "").strip()
+            if not link_text or link_text in seen or not _is_english_candidate_url("pbs", link_text):
+                continue
+            if pub_date:
+                try:
+                    parsed_pub = parsedate_to_datetime(pub_date).astimezone(timezone.utc)
+                    if parsed_pub.date() != query_date.date():
+                        continue
+                    publication_date = parsed_pub.isoformat()
+                except Exception:
+                    diagnostics.append(f"rss_pubdate_parse_failed:{rss_url}:{pub_date}")
+                    continue
+            else:
+                continue
+
+            seen.add(link_text)
+            discovered.append(
+                {
+                    "url": link_text,
+                    "title": title or link_text,
+                    "publication_date": publication_date,
+                    "lastmod": publication_date,
+                }
+            )
+            matched += 1
+            if len(discovered) >= max_links:
+                diagnostics.append(f"rss_matched_limit_reached:{rss_url}")
+                return discovered, diagnostics, selected_feed
+
+        diagnostics.append(f"rss_date_matches:{rss_url}:{matched}")
+        if discovered:
+            break
+
+    return discovered, diagnostics, selected_feed
+
+
 def _discover_articles_by_date(
     source_name: str,
     query_date: datetime,
@@ -628,7 +720,7 @@ def _discover_articles_by_date(
 ) -> tuple[list[dict[str, str]], list[str], str]:
     config = SOURCE_DATE_CONFIG[source_name]
     diagnostics: list[str] = []
-    session = _new_browser_session() if source_name in {"bbc", "aljazeera", "propublica"} else None
+    session = _new_browser_session() if source_name in {"bbc", "aljazeera", "propublica", "pbs"} else None
 
     discovered: list[dict[str, str]] = []
     seen: set[str] = set()
@@ -706,6 +798,16 @@ def _discover_articles_by_date(
             diagnostics.append(f"fallback_used:aljazeera_rss:{fallback_source}")
             return fallback_links, diagnostics, fallback_source or selected_index
 
+    if source_name == "pbs" and not discovered:
+        fallback_links, fallback_diagnostics, fallback_source = _discover_pbs_rss_by_date(
+            query_date=query_date,
+            max_links=max_links,
+        )
+        diagnostics.extend(fallback_diagnostics)
+        if fallback_links:
+            diagnostics.append(f"fallback_used:pbs_rss:{fallback_source}")
+            return fallback_links, diagnostics, fallback_source or selected_index
+
     return discovered, diagnostics, selected_index
 
 
@@ -713,6 +815,40 @@ def _is_propublica_english_page(article_url: str, article_html: str) -> bool:
     url_path = urlparse(article_url).path.lower()
     if any(marker in url_path for marker in ("/espanol/", "/spanish/", "/translation/", "/translations/")):
         return False
+
+    declared_lang = extract_document_lang(article_html)
+    if declared_lang and not declared_lang.startswith("en"):
+        return False
+
+    locale_match = re.search(
+        r'<meta[^>]+(?:property|name)=["\'](?:og:locale|twitter:locale)["\'][^>]+content=["\']([^"\']+)["\']',
+        article_html,
+        flags=re.IGNORECASE,
+    )
+    if locale_match:
+        locale_value = locale_match.group(1).strip().lower().replace("-", "_")
+        if locale_value and not locale_value.startswith("en"):
+            return False
+
+    return True
+
+
+def _is_pbs_english_page(article_url: str, article_html: str) -> bool:
+    parsed = urlparse(article_url)
+    host = parsed.netloc.lower()
+    path = parsed.path.lower() or "/"
+    if "pbs.org" not in host or "/newshour/" not in path:
+        return False
+
+    canonical_match = re.search(
+        r'<link[^>]+rel=["\']canonical["\'][^>]+href=["\']([^"\']+)["\']',
+        article_html,
+        flags=re.IGNORECASE,
+    )
+    if canonical_match:
+        canonical = canonical_match.group(1).strip().lower()
+        if "pbs.org/newshour/" not in canonical:
+            return False
 
     declared_lang = extract_document_lang(article_html)
     if declared_lang and not declared_lang.startswith("en"):
@@ -1349,7 +1485,7 @@ def scrape_source_articles_by_date(
             "Try a different date or retry later."
         )
 
-    session = _new_browser_session() if source_key in {"bbc", "aljazeera", "propublica"} else None
+    session = _new_browser_session() if source_key in {"bbc", "aljazeera", "propublica", "pbs"} else None
     source_home = SOURCE_DATE_CONFIG[source_key]["canonical_home"]
     attempted_articles = 0
     new_articles_saved = 0
@@ -1410,6 +1546,9 @@ def scrape_source_articles_by_date(
                     continue
             if source_key == "propublica" and not _is_propublica_english_page(link["url"], article_html):
                 diagnostics.append(f"filtered_non_english_propublica:{link['url']}")
+                continue
+            if source_key == "pbs" and not _is_pbs_english_page(link["url"], article_html):
+                diagnostics.append(f"filtered_non_english_or_non_article_pbs:{link['url']}")
                 continue
 
             tokens = _filter_tokens(article_text)
