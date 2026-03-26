@@ -314,6 +314,62 @@ def _render_scrape_loading_bar(source_name: str) -> None:
     )
 
 
+def _run_source_indexing(source_partition: str, source_label: str) -> dict:
+    progress_slot = st.empty()
+    progress_bar = progress_slot.progress(0)
+    progress_label = st.empty()
+    progress_state = {"total": 0, "indexed": 0}
+
+    def _index_progress(event: dict) -> None:
+        event_name = str(event.get("event", "")).strip().lower()
+        if event_name == "scan":
+            progress_state["total"] = int(event.get("eligible_for_indexing", 0) or 0)
+            progress_state["indexed"] = 0
+        elif event_name == "article_done":
+            progress_state["total"] = int(event.get("total_to_index", progress_state.get("total", 0)) or 0)
+            progress_state["indexed"] = int(event.get("indexed_so_far", progress_state.get("indexed", 0)) or 0)
+        elif event_name == "step":
+            progress_state["total"] = int(event.get("total_to_index", progress_state.get("total", 0)) or 0)
+            article_position = int(event.get("article_position", 0) or 0)
+            progress_state["indexed"] = max(progress_state["indexed"], max(article_position - 1, 0))
+
+        total = max(int(progress_state["total"]), 0)
+        indexed = max(int(progress_state["indexed"]), 0)
+        remaining = max(total - indexed, 0)
+        pct = int((indexed / total) * 100) if total > 0 else 100
+        progress_bar.progress(min(max(pct, 0), 100))
+        progress_label.markdown(
+            (
+                f'<div class="small">{source_label} indexing: '
+                f'<strong>{indexed}</strong> / <strong>{total}</strong> indexed'
+                f' · Remaining: <strong>{remaining}</strong></div>'
+            ),
+            unsafe_allow_html=True,
+        )
+
+    with st.spinner(f"Indexing {source_label} local corpus..."):
+        feedback = ingest_new_articles(
+            embedding_model=st.session_state.selected_embedding_model,
+            answer_model=st.session_state.selected_answer_model,
+            source_partition=source_partition,
+            progress_callback=_index_progress,
+        )
+
+    total_indexed = int(feedback.get("new_articles_indexed", 0))
+    total_eligible = int(feedback.get("eligible_for_indexing", total_indexed))
+    remaining = max(total_eligible - total_indexed, 0)
+    progress_bar.progress(100 if total_eligible == 0 else min(int((total_indexed / total_eligible) * 100), 100))
+    progress_label.markdown(
+        (
+            f'<div class="small">{source_label} indexing: '
+            f'<strong>{total_indexed}</strong> / <strong>{total_eligible}</strong> indexed'
+            f' · Remaining: <strong>{remaining}</strong></div>'
+        ),
+        unsafe_allow_html=True,
+    )
+    return feedback
+
+
 def _is_ollama_api_alive(host: str) -> bool:
     try:
         response = requests.get(f"{host.rstrip('/')}/api/tags", timeout=1.5)
@@ -654,12 +710,10 @@ with ap_col:
         st.session_state.ap_scrape_feedback = "Stopping AP News scrape..."
 
     if ap_index_clicked:
-        with st.spinner("Indexing AP News local corpus..."):
-            st.session_state.ap_index_feedback = ingest_new_articles(
-                embedding_model=st.session_state.selected_embedding_model,
-                answer_model=st.session_state.selected_answer_model,
-                source_partition=AP_INDEX_PARTITION,
-            )
+        st.session_state.ap_index_feedback = _run_source_indexing(
+            source_partition=AP_INDEX_PARTITION,
+            source_label="AP News",
+        )
 
     ap_result = _poll_date_scrape_result("ap", "ap_scrape_queue")
     if ap_result is not None:
@@ -740,11 +794,13 @@ with ap_col:
     )
     ap_index_feedback = st.session_state.ap_index_feedback
     if ap_index_feedback:
+        ap_eligible = int(ap_index_feedback.get("eligible_for_indexing", ap_index_feedback.get("new_articles_indexed", 0)))
+        ap_indexed = int(ap_index_feedback.get("new_articles_indexed", 0))
         st.markdown(
             (
                 '<div class="small">AP index update · '
-                f"Inspected: <strong>{ap_index_feedback.get('total_discovered', 0)}</strong> · "
-                f"Indexed new: <strong>{ap_index_feedback.get('new_articles_indexed', 0)}</strong></div>"
+                f"Indexed: <strong>{ap_indexed}</strong> / <strong>{ap_eligible}</strong> · "
+                f"Remaining: <strong>{max(ap_eligible - ap_indexed, 0)}</strong></div>"
             ),
             unsafe_allow_html=True,
         )
@@ -822,12 +878,10 @@ with bbc_col:
         st.session_state.bbc_scrape_feedback = "Stopping BBC scrape..."
 
     if bbc_index_clicked:
-        with st.spinner("Indexing BBC local corpus..."):
-            st.session_state.bbc_index_feedback = ingest_new_articles(
-                embedding_model=st.session_state.selected_embedding_model,
-                answer_model=st.session_state.selected_answer_model,
-                source_partition=BBC_INDEX_PARTITION,
-            )
+        st.session_state.bbc_index_feedback = _run_source_indexing(
+            source_partition=BBC_INDEX_PARTITION,
+            source_label="BBC",
+        )
 
     bbc_result = _poll_date_scrape_result("bbc", "bbc_scrape_queue")
     if bbc_result is not None:
@@ -910,11 +964,13 @@ with bbc_col:
     )
     bbc_index_feedback = st.session_state.bbc_index_feedback
     if bbc_index_feedback:
+        bbc_eligible = int(bbc_index_feedback.get("eligible_for_indexing", bbc_index_feedback.get("new_articles_indexed", 0)))
+        bbc_indexed = int(bbc_index_feedback.get("new_articles_indexed", 0))
         st.markdown(
             (
                 '<div class="small">BBC index update · '
-                f"Inspected: <strong>{bbc_index_feedback.get('total_discovered', 0)}</strong> · "
-                f"Indexed new: <strong>{bbc_index_feedback.get('new_articles_indexed', 0)}</strong></div>"
+                f"Indexed: <strong>{bbc_indexed}</strong> / <strong>{bbc_eligible}</strong> · "
+                f"Remaining: <strong>{max(bbc_eligible - bbc_indexed, 0)}</strong></div>"
             ),
             unsafe_allow_html=True,
         )
