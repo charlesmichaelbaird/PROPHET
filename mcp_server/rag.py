@@ -54,27 +54,58 @@ class OllamaClient:
 
     def embed(self, text: str) -> list[float]:
         """Embed text using native Ollama /api/embed endpoint."""
+        candidate_models = self._candidate_embedding_models()
+        last_error = ""
+        for model_name in candidate_models:
+            try:
+                return self._embed_with_model(text=text, model_name=model_name)
+            except RuntimeError as exc:
+                last_error = str(exc)
+                continue
+
+        raise RuntimeError(
+            "Ollama embedding request failed for all candidate models. "
+            f"Tried: {', '.join(candidate_models)}. Last error: {last_error}"
+        )
+
+    def _candidate_embedding_models(self) -> list[str]:
+        configured = [self.embed_model]
+        discovered = self._discover_installed_models()
+        embed_like = [name for name in discovered if any(marker in name.lower() for marker in ("embed", "nomic", "mxbai"))]
+        fallback = [self.chat_model]
+        all_names = configured + embed_like + discovered + fallback
+        deduped: list[str] = []
+        for name in all_names:
+            clean = str(name).strip()
+            if clean and clean not in deduped:
+                deduped.append(clean)
+        return deduped
+
+    def _discover_installed_models(self) -> list[str]:
+        try:
+            response = requests.get(f"{self.base_url}/api/tags", timeout=self.timeout_seconds)
+            response.raise_for_status()
+            models = response.json().get("models", [])
+            names = [str(model.get("name", "")).strip() for model in models if model.get("name")]
+            return [name for name in names if name]
+        except Exception:
+            return []
+
+    def _embed_with_model(self, text: str, model_name: str) -> list[float]:
         response = requests.post(
             f"{self.base_url}/api/embed",
-            json={"model": self.embed_model, "input": [text]},
+            json={"model": model_name, "input": [text]},
             timeout=self.timeout_seconds,
         )
         try:
             response.raise_for_status()
         except requests.exceptions.HTTPError as exc:
-            raise RuntimeError(
-                "Ollama embedding request failed. Verify Ollama is running and that "
-                f"PROPHET_OLLAMA_EMBED_MODEL='{self.embed_model}' is available. "
-                f"Detail: {exc}"
-            ) from exc
+            raise RuntimeError(f"model '{model_name}' failed on /api/embed: {exc}") from exc
 
         payload = response.json()
         embeddings = payload.get("embeddings", [])
         if not embeddings:
-            raise RuntimeError(
-                "Ollama /api/embed returned no vectors. "
-                f"Model '{self.embed_model}' may not support embeddings."
-            )
+            raise RuntimeError(f"model '{model_name}' returned no embeddings")
         return [float(x) for x in embeddings[0]]
 
     def chat(self, question: str, chunks: list[RetrievalChunk]) -> str:

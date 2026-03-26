@@ -6,6 +6,8 @@ from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import Mock, patch
 
+import requests
+
 from mcp_server.rag import (
     LocalVectorIndex,
     OllamaClient,
@@ -73,19 +75,40 @@ class TestRagPipeline(unittest.TestCase):
 
     def test_embed_uses_native_api_embed_shape(self) -> None:
         client = OllamaClient(base_url="http://localhost:11434", embed_model="nomic-embed-text")
+        tags_response = Mock(status_code=200)
+        tags_response.json.return_value = {"models": [{"name": "nomic-embed-text:latest"}]}
         good_response = Mock(status_code=200)
         good_response.json.return_value = {"embeddings": [[0.1, 0.2, 0.3]]}
 
-        with patch("mcp_server.rag.requests.post") as mock_post:
+        with patch("mcp_server.rag.requests.get") as mock_get, patch("mcp_server.rag.requests.post") as mock_post:
+            mock_get.return_value = tags_response
             mock_post.return_value = good_response
             vector = client.embed("test text")
 
         self.assertEqual(vector, [0.1, 0.2, 0.3])
+        mock_get.assert_called_once_with("http://localhost:11434/api/tags", timeout=60.0)
         mock_post.assert_called_once_with(
             "http://localhost:11434/api/embed",
             json={"model": "nomic-embed-text", "input": ["test text"]},
             timeout=60.0,
         )
+
+    def test_embed_falls_back_to_installed_model_list(self) -> None:
+        client = OllamaClient(base_url="http://localhost:11434", embed_model="missing-model")
+        tags_response = Mock(status_code=200)
+        tags_response.json.return_value = {"models": [{"name": "nomic-embed-text:latest"}]}
+
+        fail_response = Mock(status_code=404)
+        fail_response.raise_for_status.side_effect = requests.exceptions.HTTPError("404 missing")
+        success_response = Mock(status_code=200)
+        success_response.json.return_value = {"embeddings": [[0.7, 0.8, 0.9]]}
+
+        with patch("mcp_server.rag.requests.get") as mock_get, patch("mcp_server.rag.requests.post") as mock_post:
+            mock_get.return_value = tags_response
+            mock_post.side_effect = [fail_response, success_response]
+            vector = client.embed("fallback text")
+
+        self.assertEqual(vector, [0.7, 0.8, 0.9])
 
     def test_status_and_index_missing_articles_workflow(self) -> None:
         with TemporaryDirectory() as tmp:
