@@ -97,7 +97,7 @@ html, body, [data-testid="stAppViewContainer"], .stApp {
 }
 .source-banner {
   border: 1px solid rgba(111, 160, 255, 0.26); border-radius: 16px; padding: 0.85rem 1rem;
-  background: rgba(12, 20, 36, 0.86); margin: 0 auto 1rem auto; max-width: 980px;
+  background: rgba(12, 20, 36, 0.86); margin: 0 auto 1rem auto; width: 100%; max-width: 1480px;
 }
 .source-card {
   border: 1px solid rgba(136, 182, 255, 0.38); border-radius: 14px; padding: 0.85rem;
@@ -798,9 +798,9 @@ st.markdown("</section>", unsafe_allow_html=True)
 
 st.markdown('<section class="source-banner">', unsafe_allow_html=True)
 st.markdown('<div class="panel-title">Source Ingestion · AP News + BBC + Al Jazeera English + PBS NewsHour + ProPublica</div>', unsafe_allow_html=True)
-banner_left, banner_middle, banner_right = st.columns([0.5, 3.2, 0.5], gap="large")
+banner_left, banner_middle, banner_right = st.columns([0.1, 4.8, 0.1], gap="small")
 with banner_middle:
-    ap_col, bbc_col, aj_col, pbs_col, pp_col = st.columns(5, gap="medium")
+    ap_col, bbc_col, aj_col, pbs_col, pp_col = st.columns(5, gap="small")
 
 with ap_col:
     st.markdown(
