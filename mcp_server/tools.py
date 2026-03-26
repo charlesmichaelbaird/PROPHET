@@ -518,7 +518,7 @@ def _entry_matches_date(entry: dict[str, str], target_date: datetime) -> bool:
     return f"/{date_path_padded}/" in url or f"/{date_path_unpadded}/" in url
 
 
-def _sitemap_url_targets_date(sitemap_url: str, target_date: datetime) -> bool:
+def _sitemap_url_targets_date(sitemap_url: str, target_date: datetime, max_lag_days: int = 0) -> bool:
     parsed = urlparse(sitemap_url)
     params = parse_qs(parsed.query)
     yyyy = (params.get("yyyy") or [""])[0]
@@ -530,7 +530,8 @@ def _sitemap_url_targets_date(sitemap_url: str, target_date: datetime) -> bool:
         hinted_date = datetime(year=int(yyyy), month=int(mm), day=int(dd), tzinfo=timezone.utc)
     except ValueError:
         return False
-    return hinted_date.date() == target_date.date()
+    day_delta = (target_date.date() - hinted_date.date()).days
+    return 0 <= day_delta <= max(max_lag_days, 0)
 
 
 def _is_english_candidate_url(source_name: str, candidate_url: str) -> bool:
@@ -673,7 +674,7 @@ def _discover_articles_by_date(
                 if not _is_english_candidate_url(source_name, url):
                     diagnostics.append(f"filtered_non_english_url:{url}")
                     continue
-                if source_name == "propublica" and _sitemap_url_targets_date(sitemap_url, query_date):
+                if source_name == "propublica" and _sitemap_url_targets_date(sitemap_url, query_date, max_lag_days=2):
                     pass
                 elif not _entry_matches_date(entry, query_date):
                     continue
@@ -1277,7 +1278,12 @@ def query_source_article_count_by_date(
     )
     if not links:
         label = SOURCE_DATE_CONFIG[source_key]["label"]
-        if any("fetch_failed" in row or "parse_failed" in row for row in diagnostics):
+        has_fetch_or_parse_failures = any("fetch_failed" in row or "parse_failed" in row for row in diagnostics)
+        has_successful_sitemap_scan = any(
+            row.startswith("no_date_matches:") or row.startswith("date_matches:") or row.startswith("matched_limit_reached:")
+            for row in diagnostics
+        )
+        if has_fetch_or_parse_failures and not has_successful_sitemap_scan:
             diag_summary = " | ".join(diagnostics[:4]) if diagnostics else "no diagnostics"
             raise RuntimeError(
                 f"{label} date-based query failed for {query_date:%m/%d/%Y}. "

@@ -139,6 +139,41 @@ class TestDateScrapeBehavior(unittest.TestCase):
         self.assertEqual(links[0]["url"], "https://www.propublica.org/article/example-story")
         self.assertTrue(any("date_matches" in row for row in diagnostics))
 
+    def test_propublica_date_hinted_sitemap_allows_one_day_lag(self) -> None:
+        query_date = datetime.strptime("03/26/2026", "%m/%d/%Y")
+        index_xml = (
+            "<sitemapindex>"
+            "<sitemap><loc>https://www.propublica.org/sitemap.xml?yyyy=2026&amp;mm=03&amp;dd=25</loc></sitemap>"
+            "</sitemapindex>"
+        )
+        day_xml = (
+            "<urlset>"
+            "<url><loc>https://www.propublica.org/article/lagged-story</loc><title>Lagged Story</title></url>"
+            "</urlset>"
+        )
+
+        def _fake_fetch(url: str, timeout: int = 0, session=None, **kwargs):  # type: ignore[no-untyped-def]
+            if "yyyy=2026" in url:
+                return day_xml
+            return index_xml
+
+        with patch("mcp_server.tools.fetch_url", side_effect=_fake_fetch):
+            links, diagnostics, _ = _discover_articles_by_date("propublica", query_date, max_links=10)
+
+        self.assertEqual(len(links), 1)
+        self.assertEqual(links[0]["url"], "https://www.propublica.org/article/lagged-story")
+        self.assertTrue(any("date_matches" in row for row in diagnostics))
+
+    def test_query_does_not_raise_when_some_sitemaps_scan_but_others_fail(self) -> None:
+        with patch(
+            "mcp_server.tools._discover_articles_by_date",
+            return_value=([], ["no_date_matches:sitemap-a", "sitemap_parse_failed:sitemap-b:oops"], "index.xml"),
+        ):
+            result = query_source_article_count_by_date(source_name="propublica", date_str="03/26/2026", max_links=10)
+
+        self.assertEqual(result["links_found"], 0)
+        self.assertEqual(result["discovery_status"], "no_results")
+
 
 if __name__ == "__main__":
     unittest.main()
