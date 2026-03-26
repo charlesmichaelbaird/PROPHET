@@ -53,58 +53,29 @@ class OllamaClient:
         self.timeout_seconds = timeout_seconds
 
     def embed(self, text: str) -> list[float]:
-        candidate_models = self._candidate_embedding_models()
-        last_error: Exception | None = None
-
-        for model_name in candidate_models:
-            try:
-                return self._embed_with_model(text=text, model_name=model_name)
-            except Exception as exc:  # noqa: BLE001 - preserve best-effort fallback behavior
-                last_error = exc
-                continue
-
-        detail = str(last_error) if last_error else "unknown embedding failure"
-        raise RuntimeError(
-            "Failed to compute embeddings with available Ollama models. "
-            f"Tried: {', '.join(candidate_models)}. Detail: {detail}"
-        )
-
-    def _candidate_embedding_models(self) -> list[str]:
-        configured = [self.embed_model, self.chat_model, "nomic-embed-text", "mxbai-embed-large"]
-        deduped: list[str] = []
-        for name in configured:
-            clean = str(name).strip()
-            if clean and clean not in deduped:
-                deduped.append(clean)
-        return deduped
-
-    def _embed_with_model(self, text: str, model_name: str) -> list[float]:
-        # Newer Ollama endpoint
+        """Embed text using native Ollama /api/embed endpoint."""
         response = requests.post(
             f"{self.base_url}/api/embed",
-            json={"model": model_name, "input": [text]},
+            json={"model": self.embed_model, "input": [text]},
             timeout=self.timeout_seconds,
         )
-        if response.status_code == 200:
-            body = response.json()
-            embeddings = body.get("embeddings", [])
-            if embeddings:
-                return [float(x) for x in embeddings[0]]
-
-        # Backward-compatible endpoint
-        legacy = requests.post(
-            f"{self.base_url}/api/embeddings",
-            json={"model": model_name, "prompt": text},
-            timeout=self.timeout_seconds,
-        )
-        if legacy.status_code == 200:
-            return [float(x) for x in legacy.json().get("embedding", [])]
-
-        # surface best available detail for debugging/config
-        if response.status_code >= 400:
+        try:
             response.raise_for_status()
-        legacy.raise_for_status()
-        return []
+        except requests.exceptions.HTTPError as exc:
+            raise RuntimeError(
+                "Ollama embedding request failed. Verify Ollama is running and that "
+                f"PROPHET_OLLAMA_EMBED_MODEL='{self.embed_model}' is available. "
+                f"Detail: {exc}"
+            ) from exc
+
+        payload = response.json()
+        embeddings = payload.get("embeddings", [])
+        if not embeddings:
+            raise RuntimeError(
+                "Ollama /api/embed returned no vectors. "
+                f"Model '{self.embed_model}' may not support embeddings."
+            )
+        return [float(x) for x in embeddings[0]]
 
     def chat(self, question: str, chunks: list[RetrievalChunk]) -> str:
         context_lines: list[str] = []
@@ -292,15 +263,16 @@ def chunk_text(text: str, max_chunk_words: int = 180, overlap_words: int = 35) -
 
 def _load_vector_manifest(path: Path = DEFAULT_VECTOR_MANIFEST_PATH) -> dict[str, Any]:
     if not path.exists():
-        return {"version": 1, "indexed_articles": {}}
+        return {"version": 2, "articles": {}}
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
-        return {"version": 1, "indexed_articles": {}}
-    entries = payload.get("indexed_articles", {})
+        return {"version": 2, "articles": {}}
+    # backward-compatible read for older payload shape
+    entries = payload.get("articles", payload.get("indexed_articles", {}))
     if not isinstance(entries, dict):
         entries = {}
-    return {"version": payload.get("version", 1), "indexed_articles": entries}
+    return {"version": payload.get("version", 2), "articles": entries}
 
 
 def _save_vector_manifest(manifest: dict[str, Any], path: Path = DEFAULT_VECTOR_MANIFEST_PATH) -> str:
@@ -316,6 +288,59 @@ def ingest_new_articles(
     manifest_path: Path = DEFAULT_VECTOR_MANIFEST_PATH,
     data_root: Path | None = None,
 ) -> dict[str, Any]:
+    """Index missing scraped articles from flat-file corpus into persistent local vector index."""
+    ensure_data_directories(data_root=data_root)
+    client = client or OllamaClient()
+    index = index or LocalVectorIndex()
+
+    missing_hashes = get_indexing_status(
+        index=index,
+        manifest_path=manifest_path,
+        data_root=data_root,
+    )["missing_content_hashes"]
+    return index_missing_articles(
+        missing_content_hashes=missing_hashes,
+        client=client,
+        index=index,
+        manifest_path=manifest_path,
+        data_root=data_root,
+    )
+
+
+def get_indexing_status(
+    index: LocalVectorIndex | None = None,
+    manifest_path: Path = DEFAULT_VECTOR_MANIFEST_PATH,
+    data_root: Path | None = None,
+) -> dict[str, Any]:
+    """Report corpus/index synchronization status without mutating index state."""
+    _ = index or LocalVectorIndex()
+    ensure_data_directories(data_root=data_root)
+    corpus_manifest = load_article_index(data_root=data_root)
+    corpus_entries: dict[str, Any] = corpus_manifest.get("entries", {})
+    vector_manifest = _load_vector_manifest(manifest_path)
+    indexed_articles: dict[str, Any] = vector_manifest.get("articles", {})
+
+    all_hashes = set(corpus_entries.keys())
+    indexed_hashes = set(indexed_articles.keys())
+    missing_hashes = sorted(all_hashes - indexed_hashes)
+    return {
+        "processed_articles_total": len(all_hashes),
+        "indexed_articles_total": len(indexed_hashes.intersection(all_hashes)),
+        "missing_articles_total": len(missing_hashes),
+        "is_index_up_to_date": len(missing_hashes) == 0,
+        "missing_content_hashes": missing_hashes,
+        "vector_manifest_path": str(manifest_path),
+    }
+
+
+def index_missing_articles(
+    missing_content_hashes: list[str],
+    client: OllamaClient | None = None,
+    index: LocalVectorIndex | None = None,
+    manifest_path: Path = DEFAULT_VECTOR_MANIFEST_PATH,
+    data_root: Path | None = None,
+) -> dict[str, Any]:
+    """Incrementally index only the specified missing content hashes."""
     ensure_data_directories(data_root=data_root)
     client = client or OllamaClient()
     index = index or LocalVectorIndex()
@@ -323,13 +348,14 @@ def ingest_new_articles(
     article_manifest = load_article_index(data_root=data_root)
     article_entries: dict[str, Any] = article_manifest.get("entries", {})
     vector_manifest = _load_vector_manifest(manifest_path)
-    indexed_articles: dict[str, Any] = vector_manifest.get("indexed_articles", {})
+    indexed_articles: dict[str, Any] = vector_manifest.get("articles", {})
 
     newly_indexed_articles = 0
     newly_indexed_chunks = 0
 
-    for content_hash, entry in article_entries.items():
-        if content_hash in indexed_articles:
+    for content_hash in missing_content_hashes:
+        entry = article_entries.get(content_hash, {})
+        if not entry or content_hash in indexed_articles:
             continue
 
         file_paths = entry.get("file_paths", {})
@@ -357,24 +383,32 @@ def ingest_new_articles(
             continue
 
         indexed_articles[content_hash] = {
+            "content_hash": content_hash,
+            "source": meta["source"],
             "indexed_at": datetime.now(timezone.utc).isoformat(),
             "chunk_count": inserted,
             "title": meta["title"],
             "url": meta["url"],
             "clean_text_path": meta["clean_text_path"],
+            "scrape_timestamp": meta["scrape_timestamp"],
+            "indexed": True,
         }
         newly_indexed_articles += 1
         newly_indexed_chunks += inserted
 
-    vector_manifest["indexed_articles"] = indexed_articles
+    vector_manifest["articles"] = indexed_articles
     final_manifest_path = _save_vector_manifest(vector_manifest, manifest_path)
     stats = index.stats()
+    sync_status = get_indexing_status(index=index, manifest_path=manifest_path, data_root=data_root)
 
     return {
         "new_articles_indexed": newly_indexed_articles,
         "new_chunks_indexed": newly_indexed_chunks,
         "total_articles_indexed": stats["articles"],
         "total_chunks_indexed": stats["chunks"],
+        "processed_articles_total": sync_status["processed_articles_total"],
+        "missing_articles_total": sync_status["missing_articles_total"],
+        "is_index_up_to_date": sync_status["is_index_up_to_date"],
         "vector_manifest_path": final_manifest_path,
         "vector_index_path": str(index.db_path),
     }
@@ -392,6 +426,17 @@ def answer_question(
 
     client = client or OllamaClient()
     index = index or LocalVectorIndex()
+    verification = get_indexing_status(index=index)
+    indexing_triggered = False
+    indexing_result: dict[str, Any] = {}
+    if verification["missing_articles_total"] > 0:
+        indexing_triggered = True
+        indexing_result = index_missing_articles(
+            missing_content_hashes=verification["missing_content_hashes"],
+            client=client,
+            index=index,
+        )
+        verification = get_indexing_status(index=index)
 
     query_vector = client.embed(cleaned_question)
     retrieved = index.similarity_search(query_vector, top_k=top_k)
@@ -403,6 +448,9 @@ def answer_question(
             "citations": [],
             "engine": "ollama-rag",
             "retrieval_count": 0,
+            "index_verification": verification,
+            "indexing_triggered": indexing_triggered,
+            "indexing_result": indexing_result,
         }
 
     best_score = retrieved[0].score
@@ -414,6 +462,9 @@ def answer_question(
             "citations": [],
             "engine": "ollama-rag",
             "retrieval_count": len(retrieved),
+            "index_verification": verification,
+            "indexing_triggered": indexing_triggered,
+            "indexing_result": indexing_result,
         }
 
     answer = client.chat(cleaned_question, retrieved)
@@ -438,4 +489,7 @@ def answer_question(
         "citations": citations,
         "engine": "ollama-rag",
         "retrieval_count": len(retrieved),
+        "index_verification": verification,
+        "indexing_triggered": indexing_triggered,
+        "indexing_result": indexing_result,
     }

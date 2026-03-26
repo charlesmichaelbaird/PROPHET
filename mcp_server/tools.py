@@ -12,7 +12,7 @@ from urllib.parse import urljoin, urlparse, urlunparse
 
 import requests
 
-from mcp_server.rag import answer_question, ingest_new_articles
+from mcp_server.rag import answer_question
 from mcp_server.storage import ensure_data_directories, persist_article_if_new, write_run_index
 
 _BASE_STOPWORDS = {
@@ -673,15 +673,6 @@ def analyze_homepage(
         },
     )
     result["run_index_path"] = run_index_path
-    try:
-        result["rag_ingestion"] = ingest_new_articles()
-    except Exception as exc:
-        result["rag_ingestion"] = {
-            "error": (
-                "RAG ingestion failed for this run. Check local Ollama embedding runtime and model "
-                f"configuration. Technical detail: {exc}"
-            )
-        }
     return result
 
 

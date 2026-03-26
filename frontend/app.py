@@ -21,6 +21,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from mcp_server.server import run_ask_the_prophet, run_pipeline
+from mcp_server.rag import get_indexing_status
 from frontend.btc_data import fetch_btc_history, fetch_spot_btc_price
 
 st.set_page_config(
@@ -98,6 +99,10 @@ if "ask_prophet_citations" not in st.session_state:
     st.session_state.ask_prophet_citations = []
 if "ask_prophet_engine" not in st.session_state:
     st.session_state.ask_prophet_engine = ""
+if "ask_prophet_indexing_triggered" not in st.session_state:
+    st.session_state.ask_prophet_indexing_triggered = False
+if "ask_prophet_index_verification" not in st.session_state:
+    st.session_state.ask_prophet_index_verification = {}
 if "ollama_process" not in st.session_state:
     st.session_state.ollama_process = None
 if "ollama_managed_by_ui" not in st.session_state:
@@ -281,28 +286,24 @@ def render_prophet_dashboard() -> None:
         ask_clicked = st.button("Ask The Prophet", use_container_width=True)
 
         result = st.session_state.analysis_result
-        rag_stats = result.get("rag_ingestion", {}) if isinstance(result, dict) else {}
-        if rag_stats:
-            if rag_stats.get("error"):
-                st.markdown(
-                    f'<div class="small">Local RAG status: {rag_stats.get("error")}</div>',
-                    unsafe_allow_html=True,
-                )
-            else:
-                st.markdown(
-                    (
-                        '<div class="small">Local runtime: Ollama + SQLite index · '
-                        f"Articles indexed: <strong>{rag_stats.get('total_articles_indexed', 0)}</strong> · "
-                        f"Chunks indexed: <strong>{rag_stats.get('total_chunks_indexed', 0)}</strong></div>"
-                    ),
-                    unsafe_allow_html=True,
-                )
+        index_status = get_indexing_status()
+        st.markdown(
+            (
+                '<div class="small">Local runtime: Ollama + SQLite index · '
+                f"Processed articles: <strong>{index_status.get('processed_articles_total', 0)}</strong> · "
+                f"Indexed articles: <strong>{index_status.get('indexed_articles_total', 0)}</strong> · "
+                f"Up to date: <strong>{'Yes' if index_status.get('is_index_up_to_date') else 'No'}</strong></div>"
+            ),
+            unsafe_allow_html=True,
+        )
         if ask_clicked:
             if not result or result.get("ok") == "false":
                 st.session_state.ask_prophet_error = "Run a scrape analysis first so Prophet has evidence to search."
                 st.session_state.ask_prophet_answer = ""
                 st.session_state.ask_prophet_citations = []
                 st.session_state.ask_prophet_engine = ""
+                st.session_state.ask_prophet_indexing_triggered = False
+                st.session_state.ask_prophet_index_verification = {}
             else:
                 ask_result = run_ask_the_prophet(
                     question=ask_question,
@@ -312,6 +313,8 @@ def render_prophet_dashboard() -> None:
                 st.session_state.ask_prophet_answer = ask_result.get("answer", "")
                 st.session_state.ask_prophet_citations = ask_result.get("citations", [])
                 st.session_state.ask_prophet_engine = ask_result.get("engine", "")
+                st.session_state.ask_prophet_indexing_triggered = bool(ask_result.get("indexing_triggered"))
+                st.session_state.ask_prophet_index_verification = ask_result.get("index_verification", {})
 
         if st.session_state.ask_prophet_error:
             st.warning(st.session_state.ask_prophet_error)
@@ -324,6 +327,11 @@ def render_prophet_dashboard() -> None:
             elif engine in {"ollama", "ollama-rag"}:
                 st.markdown('<div class="small">Engine: Local Ollama + persistent local retrieval index</div>', unsafe_allow_html=True)
             st.markdown(st.session_state.ask_prophet_answer)
+            if st.session_state.ask_prophet_indexing_triggered:
+                st.markdown(
+                    '<div class="small">Pre-answer check: Missing corpus items were indexed before retrieval.</div>',
+                    unsafe_allow_html=True,
+                )
         else:
             st.markdown('<div class="small">Answer will appear here after you ask a question.</div>', unsafe_allow_html=True)
 
