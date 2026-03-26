@@ -91,6 +91,25 @@ SOURCE_DATE_CONFIG = {
     },
 }
 
+BBC_NON_ENGLISH_PATH_MARKERS = (
+    "/mundo/",
+    "/zhongwen/",
+    "/arabic/",
+    "/russian/",
+    "/hindi/",
+    "/afrique/",
+    "/korean/",
+    "/japanese/",
+    "/portuguese/",
+    "/ukrainian/",
+    "/urdu/",
+    "/persian/",
+    "/serbian/",
+    "/telugu/",
+    "/tamil/",
+    "/pidgin/",
+)
+
 
 class ArticleLinkParser(HTMLParser):
     """Collect anchor URLs and visible anchor text."""
@@ -401,6 +420,29 @@ def _entry_matches_date(entry: dict[str, str], target_date: datetime) -> bool:
     return f"/{date_path}/" in url
 
 
+def _is_english_candidate_url(source_name: str, candidate_url: str) -> bool:
+    if source_name != "bbc":
+        return True
+
+    parsed = urlparse(candidate_url)
+    host = parsed.netloc.lower()
+    path = parsed.path.lower()
+    if "bbc.com" not in host:
+        return False
+    return not any(marker in path for marker in BBC_NON_ENGLISH_PATH_MARKERS)
+
+
+def _is_probably_english_text(text: str) -> bool:
+    sample = (text or "").strip()
+    if not sample:
+        return False
+    alpha_chars = [char for char in sample if char.isalpha()]
+    if not alpha_chars:
+        return False
+    ascii_alpha = [char for char in alpha_chars if "a" <= char.lower() <= "z"]
+    return (len(ascii_alpha) / len(alpha_chars)) >= 0.85
+
+
 def _discover_articles_by_date(
     source_name: str,
     query_date: datetime,
@@ -450,6 +492,9 @@ def _discover_articles_by_date(
                     continue
                 url = entry.get("url", "")
                 if not url or url in seen:
+                    continue
+                if not _is_english_candidate_url(source_name, url):
+                    diagnostics.append(f"filtered_non_english_url:{url}")
                     continue
                 if not _entry_matches_date(entry, query_date):
                     continue
@@ -1036,6 +1081,9 @@ def scrape_source_articles_by_date(
             article_text = extract_article_text(article_html)
             if not article_text:
                 diagnostics.append(f"article_parse_empty:{link['url']}")
+                continue
+            if source_key == "bbc" and not _is_probably_english_text(f"{page_title} {article_text[:1000]}"):
+                diagnostics.append(f"filtered_non_english_content:{link['url']}")
                 continue
 
             tokens = _filter_tokens(article_text)
