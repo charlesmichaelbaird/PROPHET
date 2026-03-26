@@ -481,7 +481,13 @@ def ingest_new_articles(
         embedding_model=selected_embedding_model,
     )["missing_content_hashes"]
     if source_partition.strip():
-        normalized_source = source_partition.strip().lower()
+        normalized_source = _slugify_fs(source_partition.strip().lower(), max_len=60)
+        source_aliases = {
+            "apnews-com": "ap-news",
+            "www-bbc-com": "bbc",
+            "bbc-com": "bbc",
+        }
+        normalized_source = source_aliases.get(normalized_source, normalized_source)
         article_entries, _ = _processed_article_entries(data_root=data_root)
         missing_hashes = [
             content_hash

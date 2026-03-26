@@ -207,6 +207,8 @@ AP_SOURCE_DIRNAME = "apnews-com"
 AP_SCRAPE_FALLBACK_MAX_ARTICLES = 200
 BBC_SOURCE_DIRNAME = "www-bbc-com"
 BBC_SCRAPE_FALLBACK_MAX_ARTICLES = 200
+AP_INDEX_PARTITION = "ap-news"
+BBC_INDEX_PARTITION = "bbc"
 
 
 def _start_date_scrape_worker(source_name: str, date_str: str, max_articles: int, queue_key: str) -> None:
@@ -526,10 +528,6 @@ with hero_middle:
         st.selectbox("Embedding Model", options=["No models available"], index=0, disabled=True)
         st.selectbox("Answer Model", options=["No models available"], index=0, disabled=True)
 
-    st.markdown(
-        '<div class="small">Indexing controls are now source-specific in the AP/BBC cards.</div>',
-        unsafe_allow_html=True,
-    )
     st.markdown('</div>', unsafe_allow_html=True)
 
 with hero_right:
@@ -660,7 +658,7 @@ with ap_col:
             st.session_state.ap_index_feedback = ingest_new_articles(
                 embedding_model=st.session_state.selected_embedding_model,
                 answer_model=st.session_state.selected_answer_model,
-                source_partition=AP_SOURCE_DIRNAME,
+                source_partition=AP_INDEX_PARTITION,
             )
 
     ap_result = _poll_date_scrape_result("ap", "ap_scrape_queue")
@@ -828,7 +826,7 @@ with bbc_col:
             st.session_state.bbc_index_feedback = ingest_new_articles(
                 embedding_model=st.session_state.selected_embedding_model,
                 answer_model=st.session_state.selected_answer_model,
-                source_partition=BBC_SOURCE_DIRNAME,
+                source_partition=BBC_INDEX_PARTITION,
             )
 
     bbc_result = _poll_date_scrape_result("bbc", "bbc_scrape_queue")
