@@ -12,7 +12,7 @@ from urllib.parse import urljoin, urlparse, urlunparse
 
 import requests
 
-from mcp_server.storage import ensure_data_directories, write_article_files, write_run_index
+from mcp_server.storage import ensure_data_directories, persist_article_if_new, write_run_index
 
 _BASE_STOPWORDS = {
     "a", "about", "above", "after", "again", "against", "all", "am", "an", "and", "any", "are", "as",
@@ -471,6 +471,10 @@ def analyze_homepage(
     article_sources: list[dict[str, str]] = []
     failed_urls: list[str] = []
     persisted_articles: list[dict[str, str]] = []
+    duplicate_articles: list[dict[str, str]] = []
+    manifest_path = ""
+    new_articles_saved = 0
+    duplicate_articles_skipped = 0
     attempted_articles = 0
     candidate_articles_considered = 0
 
@@ -514,7 +518,7 @@ def analyze_homepage(
                 }
             )
             scraped_articles.append(preview_entry)
-            persisted_paths = write_article_files(
+            persist_result = persist_article_if_new(
                 homepage_url=homepage_url,
                 source_homepage_url=homepage_url,
                 article_url=link["url"],
@@ -524,13 +528,28 @@ def analyze_homepage(
                 article_html=article_html,
                 article_metadata=preview_entry,
             )
-            persisted_articles.append(
-                {
-                    "url": preview_entry["url"],
-                    "title": preview_entry["title"],
-                    **persisted_paths,
-                }
-            )
+            manifest_path = persist_result.get("manifest_path", manifest_path)
+            if persist_result.get("status") == "saved":
+                new_articles_saved += 1
+                written_paths = persist_result.get("written_paths", {})
+                persisted_articles.append(
+                    {
+                        "url": preview_entry["url"],
+                        "title": preview_entry["title"],
+                        "content_hash": persist_result.get("content_hash", ""),
+                        **written_paths,
+                    }
+                )
+            else:
+                duplicate_articles_skipped += 1
+                duplicate_articles.append(
+                    {
+                        "url": preview_entry["url"],
+                        "title": preview_entry["title"],
+                        "content_hash": persist_result.get("content_hash", ""),
+                        "status": "duplicate",
+                    }
+                )
         except Exception:
             failed_urls.append(link["url"])
             continue
@@ -606,6 +625,8 @@ def analyze_homepage(
         "articles_attempted": attempted_articles,
         "articles_scraped": article_count,
         "articles_failed": len(failed_urls),
+        "articles_new_saved": new_articles_saved,
+        "articles_duplicates_skipped": duplicate_articles_skipped,
         "scraped_preview": scraped_articles[:8],
         "top_words": table_rows,
         "summary": summary,
@@ -625,6 +646,8 @@ def analyze_homepage(
             for article, source in zip(scraped_articles, article_sources)
         ],
         "persisted_articles": persisted_articles[:8],
+        "duplicate_articles": duplicate_articles[:8],
+        "article_manifest_path": manifest_path,
     }
 
     run_index_path = write_run_index(
@@ -637,11 +660,15 @@ def analyze_homepage(
             "articles_attempted": result["articles_attempted"],
             "articles_scraped": result["articles_scraped"],
             "articles_failed": result["articles_failed"],
+            "articles_new_saved": result["articles_new_saved"],
+            "articles_duplicates_skipped": result["articles_duplicates_skipped"],
             "keyword_filter_enabled": result["keyword_filter_enabled"],
             "keyword": result["keyword"],
             "summary": result["summary"],
             "top_words": result["top_words"],
             "persisted_articles": persisted_articles,
+            "duplicate_articles": duplicate_articles,
+            "article_manifest_path": manifest_path,
         },
     )
     result["run_index_path"] = run_index_path

@@ -366,6 +366,9 @@ def render_prophet_dashboard() -> None:
             c2.metric("Articles attempted", result.get("articles_attempted", 0))
             c3.metric("Articles scraped", result["articles_scraped"])
             c4.metric("Articles failed", result.get("articles_failed", 0))
+            p1, p2 = st.columns(2)
+            p1.metric("New articles saved", result.get("articles_new_saved", 0))
+            p2.metric("Duplicates skipped", result.get("articles_duplicates_skipped", 0))
 
             if result.get("keyword_filter_enabled"):
                 k1, k2, k3 = st.columns(3)
