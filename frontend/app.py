@@ -374,6 +374,16 @@ with hero_middle:
                 ),
                 unsafe_allow_html=True,
             )
+            active_root = index_feedback.get("active_model_index_root", "")
+            counts_by_source = index_feedback.get("indexed_counts_by_source", {}) or {}
+            if active_root:
+                st.markdown(
+                    f'<div class="small">Active index root: <strong>{active_root}</strong></div>',
+                    unsafe_allow_html=True,
+                )
+            if counts_by_source:
+                counts_text = " · ".join(f"{source}: {count}" for source, count in sorted(counts_by_source.items()))
+                st.markdown(f'<div class="small">Indexed by source: {counts_text}</div>', unsafe_allow_html=True)
         else:
             st.warning(index_feedback.get("error", "Indexing failed."))
     st.markdown('</div>', unsafe_allow_html=True)
@@ -677,7 +687,7 @@ def render_prophet_dashboard() -> None:
         ask_clicked = st.button("Ask The Prophet", use_container_width=True)
 
         result = st.session_state.analysis_result
-        index_status = get_indexing_status()
+        index_status = get_indexing_status(embedding_model=st.session_state.selected_embedding_model)
         model_discovery = st.session_state.ollama_model_discovery or {}
         st.markdown(
             (
@@ -698,6 +708,21 @@ def render_prophet_dashboard() -> None:
             ),
             unsafe_allow_html=True,
         )
+        st.markdown(
+            (
+                '<div class="small">Active model index root: '
+                f"<strong>{index_status.get('active_model_index_root', 'N/A')}</strong></div>"
+            ),
+            unsafe_allow_html=True,
+        )
+        source_counts = index_status.get("indexed_counts_by_source", {}) or {}
+        if source_counts:
+            st.markdown(
+                '<div class="small">Indexed by source (active model): '
+                + " · ".join(f"{source}: {count}" for source, count in sorted(source_counts.items()))
+                + "</div>",
+                unsafe_allow_html=True,
+            )
         if not model_discovery.get("available") and model_discovery.get("error"):
             st.warning(model_discovery.get("error"))
         if ask_clicked:

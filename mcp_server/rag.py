@@ -8,8 +8,10 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import sqlite3
 from typing import Any
+from urllib.parse import urlparse
 
 import requests
 
@@ -19,12 +21,8 @@ DEFAULT_OLLAMA_BASE_URL = os.getenv("PROPHET_OLLAMA_HOST", "http://localhost:114
 DEFAULT_OLLAMA_EMBED_MODEL = os.getenv("PROPHET_OLLAMA_EMBED_MODEL", "").strip()
 DEFAULT_OLLAMA_CHAT_MODEL = os.getenv("PROPHET_OLLAMA_MODEL", "").strip()
 DEFAULT_OLLAMA_TIMEOUT_SECONDS = float(os.getenv("PROPHET_OLLAMA_TIMEOUT_SECONDS", "60"))
-DEFAULT_VECTOR_INDEX_PATH = Path(
-    os.getenv("PROPHET_VECTOR_INDEX_PATH", str(Path(__file__).resolve().parents[1] / "data" / "index" / "vector_store.sqlite"))
-)
-DEFAULT_VECTOR_MANIFEST_PATH = Path(
-    os.getenv("PROPHET_VECTOR_MANIFEST_PATH", str(Path(__file__).resolve().parents[1] / "data" / "index" / "vector_manifest.json"))
-)
+VECTOR_INDEX_FILENAME = "vector_store.sqlite"
+VECTOR_MANIFEST_FILENAME = "vector_manifest.json"
 
 
 @dataclass
@@ -37,6 +35,45 @@ class RetrievalChunk:
     clean_text_path: str
     scrape_timestamp: str
     content_hash: str
+
+
+def _slugify_fs(value: str, max_len: int = 80) -> str:
+    text = re.sub(r"[^a-zA-Z0-9._-]+", "-", value.strip().lower()).strip("-._")
+    if not text:
+        return "unknown"
+    return text[:max_len].strip("-._") or "unknown"
+
+
+def _normalize_embedding_model_name(embedding_model: str) -> str:
+    return _slugify_fs(embedding_model or "default-embedding-model", max_len=80)
+
+
+def _normalize_source_partition(entry: dict[str, Any]) -> str:
+    source_name = str(entry.get("source_name", "")).strip().lower()
+    source_url = str(entry.get("source_homepage_url", "")).strip().lower()
+    article_url = str(entry.get("article_url", "")).strip().lower()
+    source_hint = source_name or source_url or article_url
+    if "apnews" in source_hint or "ap-news" in source_hint:
+        return "ap-news"
+    if "bbc" in source_hint:
+        return "bbc"
+    if "reuters" in source_hint:
+        return "reuters"
+    parsed = urlparse(source_url or article_url)
+    host = parsed.netloc.lower().replace("www.", "")
+    if host:
+        return _slugify_fs(host.replace(".", "-"), max_len=60)
+    return _slugify_fs(source_name or "unknown-source", max_len=60)
+
+
+def _model_index_root(data_root: Path | None, embedding_model: str) -> Path:
+    layout = ensure_data_directories(data_root=data_root)
+    return layout["index"] / _normalize_embedding_model_name(embedding_model)
+
+
+def _source_index_paths(data_root: Path | None, embedding_model: str, source: str) -> tuple[Path, Path]:
+    source_dir = _model_index_root(data_root, embedding_model) / _slugify_fs(source, max_len=60)
+    return source_dir / VECTOR_INDEX_FILENAME, source_dir / VECTOR_MANIFEST_FILENAME
 
 
 def discover_ollama_models(base_url: str = DEFAULT_OLLAMA_BASE_URL, timeout_seconds: float = DEFAULT_OLLAMA_TIMEOUT_SECONDS) -> dict[str, Any]:
@@ -238,7 +275,7 @@ class OllamaClient:
 
 
 class LocalVectorIndex:
-    def __init__(self, db_path: Path = DEFAULT_VECTOR_INDEX_PATH) -> None:
+    def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
@@ -384,7 +421,7 @@ def chunk_text(text: str, max_chunk_words: int = 180, overlap_words: int = 35) -
     return chunks
 
 
-def _load_vector_manifest(path: Path = DEFAULT_VECTOR_MANIFEST_PATH) -> dict[str, Any]:
+def _load_vector_manifest(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {"version": 2, "articles": {}}
     try:
@@ -398,7 +435,7 @@ def _load_vector_manifest(path: Path = DEFAULT_VECTOR_MANIFEST_PATH) -> dict[str
     return {"version": payload.get("version", 2), "articles": entries}
 
 
-def _save_vector_manifest(manifest: dict[str, Any], path: Path = DEFAULT_VECTOR_MANIFEST_PATH) -> str:
+def _save_vector_manifest(manifest: dict[str, Any], path: Path) -> str:
     path.parent.mkdir(parents=True, exist_ok=True)
     manifest["updated_at"] = datetime.now(timezone.utc).isoformat()
     path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -408,7 +445,7 @@ def _save_vector_manifest(manifest: dict[str, Any], path: Path = DEFAULT_VECTOR_
 def ingest_new_articles(
     client: OllamaClient | None = None,
     index: LocalVectorIndex | None = None,
-    manifest_path: Path = DEFAULT_VECTOR_MANIFEST_PATH,
+    manifest_path: Path | None = None,
     data_root: Path | None = None,
     progress_callback: Any | None = None,
     embedding_model: str = "",
@@ -417,20 +454,39 @@ def ingest_new_articles(
     """Index missing scraped articles from flat-file corpus into persistent local vector index."""
     ensure_data_directories(data_root=data_root)
     client = client or OllamaClient(embed_model=embedding_model, chat_model=answer_model)
-    index = index or LocalVectorIndex()
+    if index is not None and manifest_path is not None:
+        missing_hashes = get_indexing_status(
+            index=index,
+            manifest_path=manifest_path,
+            data_root=data_root,
+            embedding_model=embedding_model,
+        )["missing_content_hashes"]
+        return index_missing_articles(
+            missing_content_hashes=missing_hashes,
+            client=client,
+            index=index,
+            manifest_path=manifest_path,
+            data_root=data_root,
+            progress_callback=progress_callback,
+            embedding_model=embedding_model,
+        )
+
+    selected_embedding_model = embedding_model or DEFAULT_OLLAMA_EMBED_MODEL or "default-embedding-model"
 
     missing_hashes = get_indexing_status(
-        index=index,
-        manifest_path=manifest_path,
+        index=None,
+        manifest_path=None,
         data_root=data_root,
+        embedding_model=selected_embedding_model,
     )["missing_content_hashes"]
     return index_missing_articles(
         missing_content_hashes=missing_hashes,
         client=client,
-        index=index,
-        manifest_path=manifest_path,
+        index=None,
+        manifest_path=None,
         data_root=data_root,
         progress_callback=progress_callback,
+        embedding_model=selected_embedding_model,
     )
 
 
@@ -455,19 +511,62 @@ def _processed_article_entries(data_root: Path | None = None) -> tuple[dict[str,
     return filtered, processed_root
 
 
+def _group_entries_by_source(entries: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    grouped: dict[str, dict[str, Any]] = {}
+    for content_hash, entry in entries.items():
+        source_partition = _normalize_source_partition(entry)
+        grouped.setdefault(source_partition, {})[content_hash] = entry
+    return grouped
+
+
 def get_indexing_status(
     index: LocalVectorIndex | None = None,
-    manifest_path: Path = DEFAULT_VECTOR_MANIFEST_PATH,
+    manifest_path: Path | None = None,
     data_root: Path | None = None,
+    embedding_model: str = "",
 ) -> dict[str, Any]:
     """Report corpus/index synchronization status without mutating index state."""
-    _ = index or LocalVectorIndex()
+    if manifest_path is not None:
+        _ = index
+        corpus_entries, processed_root = _processed_article_entries(data_root=data_root)
+        vector_manifest = _load_vector_manifest(manifest_path)
+        indexed_articles: dict[str, Any] = vector_manifest.get("articles", {})
+        all_hashes = set(corpus_entries.keys())
+        indexed_hashes = set(indexed_articles.keys())
+        missing_hashes = sorted(all_hashes - indexed_hashes)
+        return {
+            "processed_articles_total": len(all_hashes),
+            "indexed_articles_total": len(indexed_hashes.intersection(all_hashes)),
+            "missing_articles_total": len(missing_hashes),
+            "is_index_up_to_date": len(missing_hashes) == 0,
+            "missing_content_hashes": missing_hashes,
+            "vector_manifest_path": str(manifest_path),
+            "processed_scan_directory": str(processed_root),
+        }
+
+    explicit_index = index
     corpus_entries, processed_root = _processed_article_entries(data_root=data_root)
-    vector_manifest = _load_vector_manifest(manifest_path)
-    indexed_articles: dict[str, Any] = vector_manifest.get("articles", {})
+    grouped_entries = _group_entries_by_source(corpus_entries)
+    selected_embedding_model = embedding_model or DEFAULT_OLLAMA_EMBED_MODEL or "default-embedding-model"
+    model_root = _model_index_root(data_root=data_root, embedding_model=selected_embedding_model)
+
+    indexed_hashes: set[str] = set()
+    source_counts: dict[str, int] = {}
+    source_directories: list[str] = []
+    for source_name, source_entries in grouped_entries.items():
+        _, source_manifest_path = _source_index_paths(
+            data_root=data_root,
+            embedding_model=selected_embedding_model,
+            source=source_name,
+        )
+        vector_manifest = _load_vector_manifest(source_manifest_path)
+        indexed_articles: dict[str, Any] = vector_manifest.get("articles", {})
+        source_indexed_hashes = set(indexed_articles.keys()).intersection(set(source_entries.keys()))
+        indexed_hashes.update(source_indexed_hashes)
+        source_counts[source_name] = len(source_indexed_hashes)
+        source_directories.append(str(source_manifest_path.parent))
 
     all_hashes = set(corpus_entries.keys())
-    indexed_hashes = set(indexed_articles.keys())
     missing_hashes = sorted(all_hashes - indexed_hashes)
     return {
         "processed_articles_total": len(all_hashes),
@@ -475,7 +574,11 @@ def get_indexing_status(
         "missing_articles_total": len(missing_hashes),
         "is_index_up_to_date": len(missing_hashes) == 0,
         "missing_content_hashes": missing_hashes,
-        "vector_manifest_path": str(manifest_path),
+        "vector_manifest_path": str(model_root / "*" / VECTOR_MANIFEST_FILENAME),
+        "active_embedding_model": selected_embedding_model,
+        "active_model_index_root": str(model_root),
+        "source_directories": sorted(set(source_directories)),
+        "indexed_counts_by_source": source_counts,
         "processed_scan_directory": str(processed_root),
     }
 
@@ -484,18 +587,123 @@ def index_missing_articles(
     missing_content_hashes: list[str],
     client: OllamaClient | None = None,
     index: LocalVectorIndex | None = None,
-    manifest_path: Path = DEFAULT_VECTOR_MANIFEST_PATH,
+    manifest_path: Path | None = None,
     data_root: Path | None = None,
     progress_callback: Any | None = None,
+    embedding_model: str = "",
 ) -> dict[str, Any]:
     """Incrementally index only the specified missing content hashes."""
     ensure_data_directories(data_root=data_root)
     client = client or OllamaClient()
-    index = index or LocalVectorIndex()
+    if index is not None and manifest_path is not None:
+        article_entries, processed_root = _processed_article_entries(data_root=data_root)
+        vector_manifest = _load_vector_manifest(manifest_path)
+        indexed_articles: dict[str, Any] = vector_manifest.get("articles", {})
+        newly_indexed_articles = 0
+        newly_indexed_chunks = 0
+        total_discovered = len(article_entries)
+        already_indexed = max(total_discovered - len(missing_content_hashes), 0)
+        if progress_callback:
+            progress_callback(
+                {
+                    "event": "scan",
+                    "processed_scan_directory": str(processed_root),
+                    "total_discovered": total_discovered,
+                    "eligible_for_indexing": len(missing_content_hashes),
+                    "already_indexed": already_indexed,
+                    "remaining": len(missing_content_hashes),
+                }
+            )
+
+        for article_pos, content_hash in enumerate(missing_content_hashes, start=1):
+            entry = article_entries.get(content_hash, {})
+            if not entry or content_hash in indexed_articles:
+                continue
+            clean_text_path = Path(entry.get("file_paths", {}).get("clean_text_path", ""))
+            if not clean_text_path.exists():
+                continue
+            if progress_callback:
+                progress_callback(
+                    {
+                        "event": "step",
+                        "content_hash": content_hash,
+                        "article_position": article_pos,
+                        "total_to_index": len(missing_content_hashes),
+                        "step": "loading file",
+                        "title": str(entry.get("title", "")),
+                        "file_path": str(clean_text_path),
+                    }
+                )
+            text = clean_text_path.read_text(encoding="utf-8").strip()
+            chunks = chunk_text(text)
+            if not chunks:
+                continue
+            embeddings = [client.embed(chunk) for chunk in chunks]
+            inserted = index.add_chunks(
+                content_hash=content_hash,
+                chunks=chunks,
+                embeddings=embeddings,
+                metadata={
+                    "title": str(entry.get("title", "")),
+                    "url": str(entry.get("article_url", "")),
+                    "source": str(entry.get("source_name", "")),
+                    "clean_text_path": str(clean_text_path),
+                    "scrape_timestamp": str(entry.get("scrape_timestamp", "")),
+                },
+            )
+            if inserted <= 0:
+                continue
+            indexed_articles[content_hash] = {
+                "content_hash": content_hash,
+                "source": str(entry.get("source_name", "")),
+                "indexed_at": datetime.now(timezone.utc).isoformat(),
+                "chunk_count": inserted,
+                "title": str(entry.get("title", "")),
+                "url": str(entry.get("article_url", "")),
+                "clean_text_path": str(clean_text_path),
+                "scrape_timestamp": str(entry.get("scrape_timestamp", "")),
+                "indexed": True,
+            }
+            newly_indexed_articles += 1
+            newly_indexed_chunks += inserted
+
+        vector_manifest["articles"] = indexed_articles
+        final_manifest_path = _save_vector_manifest(vector_manifest, manifest_path)
+        stats = index.stats()
+        sync_status = get_indexing_status(index=index, manifest_path=manifest_path, data_root=data_root)
+        return {
+            "new_articles_indexed": newly_indexed_articles,
+            "new_chunks_indexed": newly_indexed_chunks,
+            "total_articles_indexed": stats["articles"],
+            "total_chunks_indexed": stats["chunks"],
+            "processed_articles_total": sync_status["processed_articles_total"],
+            "missing_articles_total": sync_status["missing_articles_total"],
+            "is_index_up_to_date": sync_status["is_index_up_to_date"],
+            "embedding_mode": client.embedding_mode,
+            "total_discovered": total_discovered,
+            "eligible_for_indexing": len(missing_content_hashes),
+            "already_indexed_articles": already_indexed,
+            "processed_scan_directory": str(processed_root),
+            "vector_manifest_path": final_manifest_path,
+            "vector_index_path": str(index.db_path),
+            "selected_embedding_model": embedding_model or getattr(client, "embed_model", ""),
+            "selected_answer_model": getattr(client, "chat_model", ""),
+        }
+
+    _ = index
+    _ = manifest_path
+    selected_embedding_model = (
+        embedding_model
+        or getattr(client, "embed_model", "")
+        or DEFAULT_OLLAMA_EMBED_MODEL
+        or "default-embedding-model"
+    )
 
     article_entries, processed_root = _processed_article_entries(data_root=data_root)
-    vector_manifest = _load_vector_manifest(manifest_path)
-    indexed_articles: dict[str, Any] = vector_manifest.get("articles", {})
+    source_entries = _group_entries_by_source(article_entries)
+    source_indexes: dict[str, LocalVectorIndex] = {}
+    source_manifests: dict[str, dict[str, Any]] = {}
+    source_manifest_paths: dict[str, Path] = {}
 
     newly_indexed_articles = 0
     newly_indexed_chunks = 0
@@ -515,7 +723,22 @@ def index_missing_articles(
 
     for article_pos, content_hash in enumerate(missing_content_hashes, start=1):
         entry = article_entries.get(content_hash, {})
-        if not entry or content_hash in indexed_articles:
+        if not entry:
+            continue
+
+        source_partition = _normalize_source_partition(entry)
+        if source_partition not in source_indexes:
+            source_index_path, source_manifest_path = _source_index_paths(
+                data_root=data_root,
+                embedding_model=selected_embedding_model,
+                source=source_partition,
+            )
+            source_indexes[source_partition] = LocalVectorIndex(db_path=source_index_path)
+            source_manifest_paths[source_partition] = source_manifest_path
+            source_manifests[source_partition] = _load_vector_manifest(source_manifest_path)
+
+        indexed_articles: dict[str, Any] = source_manifests[source_partition].get("articles", {})
+        if content_hash in indexed_articles:
             continue
 
         file_paths = entry.get("file_paths", {})
@@ -582,9 +805,15 @@ def index_missing_articles(
                     "total_to_index": len(missing_content_hashes),
                     "step": "writing to index",
                     "title": meta["title"],
+                    "source_partition": source_partition,
                 }
             )
-        inserted = index.add_chunks(content_hash=content_hash, chunks=chunks, embeddings=embeddings, metadata=meta)
+        inserted = source_indexes[source_partition].add_chunks(
+            content_hash=content_hash,
+            chunks=chunks,
+            embeddings=embeddings,
+            metadata=meta,
+        )
         if inserted <= 0:
             continue
 
@@ -610,6 +839,7 @@ def index_missing_articles(
             "scrape_timestamp": meta["scrape_timestamp"],
             "indexed": True,
         }
+        source_manifests[source_partition]["articles"] = indexed_articles
         newly_indexed_articles += 1
         newly_indexed_chunks += inserted
         if progress_callback:
@@ -624,18 +854,31 @@ def index_missing_articles(
                 }
             )
 
-    vector_manifest["articles"] = indexed_articles
-    final_manifest_path = _save_vector_manifest(vector_manifest, manifest_path)
-    stats = index.stats()
-    sync_status = get_indexing_status(index=index, manifest_path=manifest_path, data_root=data_root)
-    selected_embedding_model = getattr(client, "embed_model", "")
+    source_manifest_outputs: dict[str, str] = {}
+    aggregate_articles = 0
+    aggregate_chunks = 0
+    for source_partition, source_manifest in source_manifests.items():
+        source_manifest_outputs[source_partition] = _save_vector_manifest(
+            source_manifest,
+            source_manifest_paths[source_partition],
+        )
+        source_stats = source_indexes[source_partition].stats()
+        aggregate_articles += source_stats["articles"]
+        aggregate_chunks += source_stats["chunks"]
+
+    sync_status = get_indexing_status(
+        index=None,
+        manifest_path=None,
+        data_root=data_root,
+        embedding_model=selected_embedding_model,
+    )
     selected_answer_model = getattr(client, "chat_model", "")
 
     return {
         "new_articles_indexed": newly_indexed_articles,
         "new_chunks_indexed": newly_indexed_chunks,
-        "total_articles_indexed": stats["articles"],
-        "total_chunks_indexed": stats["chunks"],
+        "total_articles_indexed": aggregate_articles,
+        "total_chunks_indexed": aggregate_chunks,
         "processed_articles_total": sync_status["processed_articles_total"],
         "missing_articles_total": sync_status["missing_articles_total"],
         "is_index_up_to_date": sync_status["is_index_up_to_date"],
@@ -644,10 +887,14 @@ def index_missing_articles(
         "eligible_for_indexing": len(missing_content_hashes),
         "already_indexed_articles": already_indexed,
         "processed_scan_directory": str(processed_root),
-        "vector_manifest_path": final_manifest_path,
-        "vector_index_path": str(index.db_path),
+        "vector_manifest_path": str(_model_index_root(data_root=data_root, embedding_model=selected_embedding_model)),
+        "vector_manifest_paths_by_source": source_manifest_outputs,
+        "vector_index_path": str(_model_index_root(data_root=data_root, embedding_model=selected_embedding_model)),
+        "active_model_index_root": str(_model_index_root(data_root=data_root, embedding_model=selected_embedding_model)),
+        "indexed_counts_by_source": sync_status.get("indexed_counts_by_source", {}),
         "selected_embedding_model": selected_embedding_model,
         "selected_answer_model": selected_answer_model,
+        "sources_discovered": sorted(source_entries.keys()),
     }
 
 
@@ -664,12 +911,17 @@ def answer_question(
         return {"ok": "false", "error": "Please enter a question first.", "answer": "", "citations": []}
 
     client = client or OllamaClient(embed_model=embedding_model, chat_model=answer_model)
-    index = index or LocalVectorIndex()
-    verification = get_indexing_status(index=index)
+    _ = index
+    selected_embedding_model = (
+        embedding_model
+        or getattr(client, "embed_model", "")
+        or DEFAULT_OLLAMA_EMBED_MODEL
+        or "default-embedding-model"
+    )
+    selected_answer_model = answer_model or getattr(client, "chat_model", answer_model)
+    verification = get_indexing_status(index=None, manifest_path=None, embedding_model=selected_embedding_model)
     indexing_triggered = False
     indexing_result: dict[str, Any] = {}
-    selected_embedding_model = getattr(client, "embed_model", embedding_model)
-    selected_answer_model = getattr(client, "chat_model", answer_model)
     if verification["missing_articles_total"] > 0:
         return {
             "ok": "true",
@@ -690,7 +942,19 @@ def answer_question(
         }
 
     query_vector = client.embed(cleaned_question)
-    retrieved = index.similarity_search(query_vector, top_k=top_k)
+    retrieved: list[RetrievalChunk] = []
+    if explicit_index is not None:
+        retrieved = explicit_index.similarity_search(query_vector, top_k=top_k)
+    else:
+        model_root = _model_index_root(data_root=None, embedding_model=selected_embedding_model)
+        source_dirs = [
+            item for item in model_root.iterdir() if item.is_dir() and (item / VECTOR_INDEX_FILENAME).exists()
+        ] if model_root.exists() else []
+        for source_dir in source_dirs:
+            source_index = LocalVectorIndex(db_path=source_dir / VECTOR_INDEX_FILENAME)
+            retrieved.extend(source_index.similarity_search(query_vector, top_k=top_k))
+        retrieved.sort(key=lambda item: item.score, reverse=True)
+        retrieved = retrieved[:top_k]
     if not retrieved:
         return {
             "ok": "true",
