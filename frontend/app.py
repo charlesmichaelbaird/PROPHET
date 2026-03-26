@@ -269,6 +269,21 @@ def _count_locally_scraped_reuters_articles() -> int:
     return sum(1 for _ in processed_root.glob("*/*/metadata.json"))
 
 
+def _format_reuters_user_error(error_message: str) -> str:
+    normalized = (error_message or "").lower()
+    if any(token in normalized for token in ("blocked", "forbidden", "http 401", "http 403", "http 429")):
+        return (
+            "Reuters blocked this automated request. "
+            "Try again later; if blocking persists, an alternate discovery path/source may be needed."
+        )
+    if "no candidate article links" in normalized or "no article links" in normalized:
+        return (
+            "Reuters discovery succeeded but no article links were detected from the current discovery pages. "
+            "Try again later or use an alternate Reuters discovery path."
+        )
+    return error_message or "Reuters request failed."
+
+
 st.markdown('<section class="hero">', unsafe_allow_html=True)
 _ensure_ollama_runtime_started(st.session_state.ollama_host)
 hero_left, hero_middle, hero_right = st.columns([2.5, 1.8, 1.2], gap="medium")
@@ -554,7 +569,9 @@ with reuters_col:
                 f"Requested: {requested_reuters_scrape_count} · Attempted: {reuters_attempted} · Scraped: {reuters_scraped}."
             )
         else:
-            st.session_state.reuters_scrape_feedback = reuters_result.get("error", "Reuters scrape failed.")
+            st.session_state.reuters_scrape_feedback = _format_reuters_user_error(
+                reuters_result.get("error", "Reuters scrape failed.")
+            )
 
     reuters_query_result = st.session_state.reuters_query_result
     if reuters_query_result:
@@ -572,7 +589,19 @@ with reuters_col:
                 for item in reuters_preview[:5]:
                     st.markdown(f"- [{item.get('title', item.get('url', ''))}]({item.get('url', '')})")
         else:
-            st.warning(reuters_query_result.get("error", "Reuters count query failed."))
+            st.warning(_format_reuters_user_error(reuters_query_result.get("error", "Reuters count query failed.")))
+
+    reuters_query_diagnostics = reuters_query_result.get("diagnostics", []) if reuters_query_result else []
+    if reuters_query_diagnostics:
+        st.markdown(
+            f'<div class="small">Diagnostics: {" · ".join(reuters_query_diagnostics[:3])}</div>',
+            unsafe_allow_html=True,
+        )
+
+    latest_reuters_pipeline = st.session_state.analysis_result if st.session_state.analysis_result else {}
+    if latest_reuters_pipeline.get("fetch_diagnostics") and latest_reuters_pipeline.get("ok") == "true":
+        diagnostics_text = " · ".join(latest_reuters_pipeline.get("fetch_diagnostics", [])[:3])
+        st.markdown(f'<div class="small">Scrape diagnostics: {diagnostics_text}</div>', unsafe_allow_html=True)
 
     if st.session_state.reuters_scrape_feedback:
         st.markdown(f'<div class="small">{st.session_state.reuters_scrape_feedback}</div>', unsafe_allow_html=True)

@@ -53,6 +53,23 @@ _STOPWORDS = (
     | _DATE_AND_FORMAT_STOPWORDS
 )
 
+REUTERS_DISCOVERY_PATHS = (
+    "/",
+    "/world/",
+    "/business/",
+    "/markets/",
+)
+
+_BROWSER_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+}
+
 
 class ArticleLinkParser(HTMLParser):
     """Collect anchor URLs and visible anchor text."""
@@ -174,20 +191,50 @@ class DocumentTitleParser(HTMLParser):
         return self.meta_title or title_tag
 
 
-def fetch_url(url: str, timeout: int = 10) -> str:
+def _is_reuters_host(url: str) -> bool:
+    return "reuters.com" in urlparse(url).netloc.lower()
+
+
+def _new_reuters_session() -> requests.Session:
+    session = requests.Session()
+    session.headers.update(_BROWSER_HEADERS)
+    return session
+
+
+def fetch_url(
+    url: str,
+    timeout: int = 10,
+    session: requests.Session | None = None,
+    headers: dict[str, str] | None = None,
+) -> str:
     """Fetch raw HTML for a URL with basic validation and error messages."""
     parsed = urlparse(url)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise ValueError("URL must include http:// or https:// and a valid host")
 
+    request_headers = {"User-Agent": "PROPHET-ZeroCost/1.0 (+https://example.local)"}
+    if _is_reuters_host(url):
+        request_headers.update(_BROWSER_HEADERS)
+    if headers:
+        request_headers.update(headers)
+
     try:
-        response = requests.get(
+        client = session or requests
+        response = client.get(
             url,
             timeout=timeout,
-            headers={"User-Agent": "PROPHET-ZeroCost/1.0 (+https://example.local)"},
+            headers=request_headers,
         )
         response.raise_for_status()
         return response.text
+    except requests.exceptions.HTTPError as exc:
+        status_code = exc.response.status_code if exc.response is not None else None
+        if status_code in {401, 403, 429}:
+            raise RuntimeError(
+                f"Request blocked by target site (HTTP {status_code}). "
+                "Try alternate discovery pages or retry later."
+            ) from exc
+        raise RuntimeError(f"Failed to fetch URL (HTTP {status_code}): {exc}") from exc
     except requests.exceptions.RequestException as exc:
         raise RuntimeError(f"Failed to fetch URL: {exc}") from exc
 
@@ -244,6 +291,29 @@ def extract_article_links(homepage_html: str, homepage_url: str, max_links: int 
             break
 
     return links
+
+
+def _discover_reuters_links(max_links: int) -> tuple[list[dict[str, str]], str, list[str]]:
+    """Try Reuters homepage/discovery pages and return first link set found."""
+    base_url = "https://www.reuters.com/"
+    session = _new_reuters_session()
+    diagnostics: list[str] = []
+
+    for discovery_path in REUTERS_DISCOVERY_PATHS:
+        candidate_url = urljoin(base_url, discovery_path)
+        try:
+            homepage_html = fetch_url(candidate_url, timeout=12, session=session)
+            links = extract_article_links(homepage_html, candidate_url, max_links=max_links)
+        except Exception as exc:
+            diagnostics.append(f"blocked_or_fetch_failed:{candidate_url}:{exc}")
+            continue
+
+        if links:
+            diagnostics.append(f"discovery_success:{candidate_url}:links={len(links)}")
+            return links, candidate_url, diagnostics
+        diagnostics.append(f"no_links_found:{candidate_url}")
+
+    return [], base_url, diagnostics
 
 
 def extract_article_text(article_html: str) -> str:
@@ -458,8 +528,22 @@ def analyze_homepage(
     """Scrape homepage article links and compute top-word metrics without LLMs."""
     scrape_started_at = datetime.now(timezone.utc)
     ensure_data_directories()
-    homepage_html = fetch_url(homepage_url)
-    link_entries = extract_article_links(homepage_html, homepage_url, max_links=max_articles * 3)
+    diagnostics: list[str] = []
+    reuters_mode = _is_reuters_host(homepage_url)
+    reuters_session: requests.Session | None = _new_reuters_session() if reuters_mode else None
+    discovery_url = homepage_url
+
+    if reuters_mode:
+        link_entries, discovery_url, diagnostics = _discover_reuters_links(max_links=max_articles * 3)
+        if not link_entries:
+            diag_summary = " | ".join(diagnostics[:4]) if diagnostics else "no diagnostics"
+            raise RuntimeError(
+                "Reuters blocked discovery requests or returned no candidate article links. "
+                f"Try again later or use an alternate Reuters discovery page. Diagnostics: {diag_summary}"
+            )
+    else:
+        homepage_html = fetch_url(homepage_url)
+        link_entries = extract_article_links(homepage_html, homepage_url, max_links=max_articles * 3)
 
     keyword_clean = keyword.strip()
     keyword_mode_active = bool(keyword_filter_enabled)
@@ -485,7 +569,7 @@ def analyze_homepage(
 
         attempted_articles += 1
         try:
-            article_html = fetch_url(link["url"], timeout=12)
+            article_html = fetch_url(link["url"], timeout=12, session=reuters_session)
             page_title = extract_document_title(article_html)
             article_text = extract_article_text(article_html)
             if not article_text:
@@ -551,7 +635,9 @@ def analyze_homepage(
                         "status": "duplicate",
                     }
                 )
-        except Exception:
+        except Exception as exc:
+            if reuters_mode:
+                diagnostics.append(f"article_fetch_failed:{link['url']}:{exc}")
             failed_urls.append(link["url"])
             continue
 
@@ -649,13 +735,15 @@ def analyze_homepage(
         "persisted_articles": persisted_articles[:8],
         "duplicate_articles": duplicate_articles[:8],
         "article_manifest_path": manifest_path,
+        "fetch_diagnostics": diagnostics[:30],
     }
 
     run_index_path = write_run_index(
-        homepage_url=homepage_url,
+        homepage_url=discovery_url,
         scrape_timestamp=scrape_started_at,
         summary_payload={
             "homepage_url": homepage_url,
+            "discovery_url": discovery_url,
             "scrape_started_at": scrape_started_at.isoformat(),
             "links_found": result["links_found"],
             "articles_attempted": result["articles_attempted"],
@@ -670,6 +758,7 @@ def analyze_homepage(
             "persisted_articles": persisted_articles,
             "duplicate_articles": duplicate_articles,
             "article_manifest_path": manifest_path,
+            "fetch_diagnostics": diagnostics[:100],
         },
     )
     result["run_index_path"] = run_index_path
@@ -681,8 +770,20 @@ def query_site_article_count(
     max_links: int = 200,
 ) -> dict:
     """Run lightweight article-link discovery/count without scraping article bodies."""
-    homepage_html = fetch_url(homepage_url)
-    link_entries = extract_article_links(homepage_html, homepage_url, max_links=max_links)
+    diagnostics: list[str] = []
+    discovery_url = homepage_url
+    if _is_reuters_host(homepage_url):
+        link_entries, discovery_url, diagnostics = _discover_reuters_links(max_links=max_links)
+        if not link_entries:
+            diag_summary = " | ".join(diagnostics[:4]) if diagnostics else "no diagnostics"
+            raise RuntimeError(
+                "Reuters blocked lightweight discovery requests (or returned no article links). "
+                f"An alternate discovery path may be needed. Diagnostics: {diag_summary}"
+            )
+    else:
+        homepage_html = fetch_url(homepage_url)
+        link_entries = extract_article_links(homepage_html, homepage_url, max_links=max_links)
+
     preview = []
     for entry in link_entries[:10]:
         preview.append(
@@ -694,8 +795,10 @@ def query_site_article_count(
 
     return {
         "homepage_url": homepage_url,
+        "discovery_url": discovery_url,
         "links_found": len(link_entries),
         "preview": preview,
+        "diagnostics": diagnostics[:20],
     }
 
 
