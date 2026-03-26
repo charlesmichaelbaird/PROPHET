@@ -450,6 +450,7 @@ def ingest_new_articles(
     progress_callback: Any | None = None,
     embedding_model: str = "",
     answer_model: str = "",
+    source_partition: str = "",
 ) -> dict[str, Any]:
     """Index missing scraped articles from flat-file corpus into persistent local vector index."""
     ensure_data_directories(data_root=data_root)
@@ -479,6 +480,14 @@ def ingest_new_articles(
         data_root=data_root,
         embedding_model=selected_embedding_model,
     )["missing_content_hashes"]
+    if source_partition.strip():
+        normalized_source = source_partition.strip().lower()
+        article_entries, _ = _processed_article_entries(data_root=data_root)
+        missing_hashes = [
+            content_hash
+            for content_hash in missing_hashes
+            if _normalize_source_partition(article_entries.get(content_hash, {})) == normalized_source
+        ]
     return index_missing_articles(
         missing_content_hashes=missing_hashes,
         client=client,

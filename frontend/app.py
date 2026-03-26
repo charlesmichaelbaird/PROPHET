@@ -183,6 +183,24 @@ if "ap_scrape_started_at" not in st.session_state:
     st.session_state.ap_scrape_started_at = 0.0
 if "bbc_scrape_started_at" not in st.session_state:
     st.session_state.bbc_scrape_started_at = 0.0
+if "ap_scrape_status" not in st.session_state:
+    st.session_state.ap_scrape_status = "idle"
+if "bbc_scrape_status" not in st.session_state:
+    st.session_state.bbc_scrape_status = "idle"
+if "ap_scrape_progress" not in st.session_state:
+    st.session_state.ap_scrape_progress = {}
+if "bbc_scrape_progress" not in st.session_state:
+    st.session_state.bbc_scrape_progress = {}
+if "ap_last_elapsed_seconds" not in st.session_state:
+    st.session_state.ap_last_elapsed_seconds = 0
+if "bbc_last_elapsed_seconds" not in st.session_state:
+    st.session_state.bbc_last_elapsed_seconds = 0
+if "ap_index_feedback" not in st.session_state:
+    st.session_state.ap_index_feedback = {}
+if "bbc_index_feedback" not in st.session_state:
+    st.session_state.bbc_index_feedback = {}
+if "last_live_refresh_at" not in st.session_state:
+    st.session_state.last_live_refresh_at = 0.0
 
 
 AP_SOURCE_DIRNAME = "apnews-com"
@@ -195,8 +213,16 @@ def _start_date_scrape_worker(source_name: str, date_str: str, max_articles: int
     queue_obj = st.session_state[queue_key]
 
     def _runner() -> None:
-        result = run_pipeline_by_date(source_name=source_name, date_str=date_str, max_articles=max_articles)
-        queue_obj.put(result)
+        def _progress(event: dict) -> None:
+            queue_obj.put({"kind": "progress", "source": source_name, "event": event})
+
+        result = run_pipeline_by_date(
+            source_name=source_name,
+            date_str=date_str,
+            max_articles=max_articles,
+            progress_callback=_progress,
+        )
+        queue_obj.put({"kind": "result", "source": source_name, "payload": result})
 
     thread = threading.Thread(target=_runner, daemon=True)
     thread.start()
@@ -204,23 +230,86 @@ def _start_date_scrape_worker(source_name: str, date_str: str, max_articles: int
     st.session_state[f"{source_name}_scrape_active"] = True
     st.session_state[f"{source_name}_stop_requested"] = False
     st.session_state[f"{source_name}_scrape_started_at"] = time.time()
+    st.session_state[f"{source_name}_scrape_status"] = "querying/discovering"
+    st.session_state[f"{source_name}_scrape_progress"] = {
+        "articles_attempted": 0,
+        "articles_scraped": 0,
+        "articles_failed": 0,
+        "links_found": 0,
+        "progress_pct": 0,
+    }
 
 
 def _poll_date_scrape_result(source_name: str, queue_key: str) -> dict | None:
     queue_obj = st.session_state[queue_key]
-    try:
-        return queue_obj.get_nowait()
-    except Empty:
-        return None
+    result_payload = None
+    while True:
+        try:
+            message = queue_obj.get_nowait()
+        except Empty:
+            break
+        if isinstance(message, dict) and message.get("kind") == "progress":
+            event = message.get("event", {})
+            progress = st.session_state.get(f"{source_name}_scrape_progress", {}).copy()
+            progress.update(
+                {
+                    "articles_attempted": int(event.get("articles_attempted", progress.get("articles_attempted", 0))),
+                    "articles_scraped": int(event.get("articles_scraped", progress.get("articles_scraped", 0))),
+                    "articles_failed": int(event.get("articles_failed", progress.get("articles_failed", 0))),
+                    "links_found": int(event.get("links_found", progress.get("links_found", 0))),
+                }
+            )
+            links_found = max(int(progress.get("links_found", 0)), 0)
+            attempted = max(int(progress.get("articles_attempted", 0)), 0)
+            max_articles = max(int(event.get("max_articles", 0)), 0)
+            known_total = links_found if links_found > 0 else max_articles
+            if known_total > 0:
+                progress["progress_pct"] = min(int((attempted / known_total) * 100), 100)
+            else:
+                progress["progress_pct"] = 0
+            st.session_state[f"{source_name}_scrape_progress"] = progress
+
+            event_type = str(event.get("event", "")).strip().lower()
+            if event_type == "discover_complete":
+                st.session_state[f"{source_name}_scrape_status"] = "scraping"
+            elif event_type == "stopped":
+                st.session_state[f"{source_name}_scrape_status"] = "stopped"
+            elif event_type in {"article_started", "article_done", "article_failed"}:
+                st.session_state[f"{source_name}_scrape_status"] = "scraping"
+        elif isinstance(message, dict) and message.get("kind") == "result":
+            result_payload = message.get("payload", {})
+    return result_payload
+
+
+def _format_elapsed(seconds: int) -> str:
+    seconds = max(int(seconds), 0)
+    hours, remainder = divmod(seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}"
 
 
 def _render_scrape_loading_bar(source_name: str) -> None:
     started_at = float(st.session_state.get(f"{source_name}_scrape_started_at", 0.0) or 0.0)
-    elapsed = max(time.time() - started_at, 0.0) if started_at else 0.0
-    # Pulsing-style progress: visually conveys active scrape even without article-level callbacks.
-    pct = int(15 + ((elapsed * 12) % 70))
-    st.progress(pct)
-    st.markdown(f'<div class="small">Scrape in progress · elapsed: <strong>{elapsed:.1f}s</strong></div>', unsafe_allow_html=True)
+    elapsed_seconds = int(max(time.time() - started_at, 0.0)) if started_at else 0
+    st.session_state[f"{source_name}_last_elapsed_seconds"] = elapsed_seconds
+    progress = st.session_state.get(f"{source_name}_scrape_progress", {})
+    pct = int(progress.get("progress_pct", 0))
+    attempted = int(progress.get("articles_attempted", 0))
+    scraped = int(progress.get("articles_scraped", 0))
+    failed = int(progress.get("articles_failed", 0))
+    links_found = int(progress.get("links_found", 0))
+    st.progress(min(max(pct, 0), 100))
+    total_text = f"/ {links_found}" if links_found > 0 else ""
+    st.markdown(
+        (
+            f'<div class="small">Status: <strong>{st.session_state.get(f"{source_name}_scrape_status", "scraping")}</strong>'
+            f' · Progress: <strong>{attempted}{total_text}</strong>'
+            f' · Scraped: <strong>{scraped}</strong>'
+            f' · Failed: <strong>{failed}</strong>'
+            f' · Elapsed: <strong>{_format_elapsed(elapsed_seconds)}</strong></div>'
+        ),
+        unsafe_allow_html=True,
+    )
 
 
 def _is_ollama_api_alive(host: str) -> bool:
@@ -437,63 +526,10 @@ with hero_middle:
         st.selectbox("Embedding Model", options=["No models available"], index=0, disabled=True)
         st.selectbox("Answer Model", options=["No models available"], index=0, disabled=True)
 
-    index_clicked = st.button(
-        "Index Data",
-        use_container_width=True,
-        disabled=not model_discovery.get("available"),
+    st.markdown(
+        '<div class="small">Indexing controls are now source-specific in the AP/BBC cards.</div>',
+        unsafe_allow_html=True,
     )
-    if not model_discovery.get("available"):
-        st.markdown('<div class="small">Indexing requires local Ollama runtime.</div>', unsafe_allow_html=True)
-    if index_clicked:
-        progress_slot = st.empty()
-        progress_bar = progress_slot.progress(0)
-        progress_label = st.empty()
-
-        def _index_progress(event: dict) -> None:
-            total = max(int(event.get("total_to_index", event.get("eligible_for_indexing", 0)) or 0), 0)
-            position = max(int(event.get("article_position", 0) or 0), 0)
-            if event.get("event") == "article_done":
-                position = max(int(event.get("indexed_so_far", position) or position), position)
-            percent = int((position / total) * 100) if total > 0 else 5
-            progress_bar.progress(min(max(percent, 0), 100))
-            progress_label.markdown(
-                f'<div class="small">Indexing progress: <strong>{position}</strong> / <strong>{total}</strong></div>',
-                unsafe_allow_html=True,
-            )
-
-        with st.spinner("Indexing saved local corpus from /data ..."):
-            st.session_state.index_data_feedback = ingest_new_articles(
-                embedding_model=st.session_state.selected_embedding_model,
-                answer_model=st.session_state.selected_answer_model,
-                progress_callback=_index_progress,
-            )
-        progress_bar.progress(100)
-
-    index_feedback = st.session_state.index_data_feedback
-    if index_feedback:
-        if not index_feedback.get("error"):
-            inspected = index_feedback.get("total_discovered", index_feedback.get("processed_articles_total", 0))
-            st.markdown(
-                (
-                    '<div class="small">Index complete · '
-                    f"Inspected: <strong>{inspected}</strong> · "
-                    f"Newly indexed: <strong>{index_feedback.get('new_articles_indexed', 0)}</strong> · "
-                    f"New chunks: <strong>{index_feedback.get('new_chunks_indexed', 0)}</strong></div>"
-                ),
-                unsafe_allow_html=True,
-            )
-            active_root = index_feedback.get("active_model_index_root", "")
-            counts_by_source = index_feedback.get("indexed_counts_by_source", {}) or {}
-            if active_root:
-                st.markdown(
-                    f'<div class="small">Active index root: <strong>{active_root}</strong></div>',
-                    unsafe_allow_html=True,
-                )
-            if counts_by_source:
-                counts_text = " · ".join(f"{source}: {count}" for source, count in sorted(counts_by_source.items()))
-                st.markdown(f'<div class="small">Indexed by source: {counts_text}</div>', unsafe_allow_html=True)
-        else:
-            st.warning(index_feedback.get("error", "Indexing failed."))
     st.markdown('</div>', unsafe_allow_html=True)
 
 with hero_right:
@@ -579,13 +615,23 @@ with ap_col:
         query_clicked = st.button("Query Site Article Count", use_container_width=True, key="ap_query_btn")
 
     ap_scrape_active = bool(st.session_state.ap_scrape_active)
-    scrape_clicked = st.button(
-        "Stop Scraping" if ap_scrape_active else "Data Scrape",
-        use_container_width=True,
-        key="ap_data_scrape_btn",
-    )
+    ap_action_col_left, ap_action_col_right = st.columns(2, gap="small")
+    with ap_action_col_left:
+        scrape_clicked = st.button(
+            "Stop Scraping" if ap_scrape_active else "Data Scrape",
+            use_container_width=True,
+            key="ap_data_scrape_btn",
+        )
+    with ap_action_col_right:
+        ap_index_clicked = st.button(
+            "Index Data",
+            use_container_width=True,
+            key="ap_index_data_btn",
+            disabled=not model_discovery.get("available"),
+        )
 
     if query_clicked:
+        st.session_state.ap_scrape_status = "querying/discovering"
         with st.spinner("Querying AP News archive metadata for selected date..."):
             st.session_state.ap_query_result = run_article_count_query_by_date(
                 source_name="ap",
@@ -606,29 +652,43 @@ with ap_col:
     elif scrape_clicked and ap_scrape_active:
         run_stop_pipeline_by_date(source_name="ap")
         st.session_state.ap_stop_requested = True
+        st.session_state.ap_scrape_status = "stopped"
         st.session_state.ap_scrape_feedback = "Stopping AP News scrape..."
+
+    if ap_index_clicked:
+        with st.spinner("Indexing AP News local corpus..."):
+            st.session_state.ap_index_feedback = ingest_new_articles(
+                embedding_model=st.session_state.selected_embedding_model,
+                answer_model=st.session_state.selected_answer_model,
+                source_partition=AP_SOURCE_DIRNAME,
+            )
 
     ap_result = _poll_date_scrape_result("ap", "ap_scrape_queue")
     if ap_result is not None:
         st.session_state.analysis_result = ap_result
         st.session_state.ap_scrape_active = False
         st.session_state.ap_scrape_thread = None
+        if st.session_state.ap_scrape_started_at:
+            st.session_state.ap_last_elapsed_seconds = int(time.time() - st.session_state.ap_scrape_started_at)
         st.session_state.ap_scrape_started_at = 0.0
         ap_ok = ap_result.get("ok") == "true"
         if ap_ok:
             scraped = ap_result.get("articles_scraped", 0)
             attempted = ap_result.get("articles_attempted", 0)
             if ap_result.get("scrape_stopped_by_user"):
+                st.session_state.ap_scrape_status = "stopped"
                 st.session_state.ap_scrape_feedback = (
                     "Scrape stopped by user. "
-                    f"Attempted: {attempted} · Scraped: {scraped}."
+                    f"Attempted: {attempted} · Scraped: {scraped} · Elapsed: {_format_elapsed(st.session_state.ap_last_elapsed_seconds)}."
                 )
             else:
+                st.session_state.ap_scrape_status = "completed"
                 st.session_state.ap_scrape_feedback = (
                     "AP News scrape complete. "
-                    f"Attempted: {attempted} · Scraped: {scraped}."
+                    f"Attempted: {attempted} · Scraped: {scraped} · Elapsed: {_format_elapsed(st.session_state.ap_last_elapsed_seconds)}."
                 )
         else:
+            st.session_state.ap_scrape_status = "idle"
             st.session_state.ap_scrape_feedback = ap_result.get("error", "AP News scrape failed.")
 
     query_result = st.session_state.ap_query_result
@@ -649,8 +709,11 @@ with ap_col:
         else:
             st.warning(query_result.get("error", "AP News count query failed."))
 
+    st.markdown(
+        f'<div class="small">Scrape status: <strong>{st.session_state.ap_scrape_status}</strong></div>',
+        unsafe_allow_html=True,
+    )
     if st.session_state.ap_scrape_active:
-        st.markdown('<div class="small"><strong>Scrape active…</strong></div>', unsafe_allow_html=True)
         _render_scrape_loading_bar("ap")
     if st.session_state.ap_scrape_feedback:
         st.markdown(f'<div class="small">{st.session_state.ap_scrape_feedback}</div>', unsafe_allow_html=True)
@@ -677,6 +740,16 @@ with ap_col:
         ),
         unsafe_allow_html=True,
     )
+    ap_index_feedback = st.session_state.ap_index_feedback
+    if ap_index_feedback:
+        st.markdown(
+            (
+                '<div class="small">AP index update · '
+                f"Inspected: <strong>{ap_index_feedback.get('total_discovered', 0)}</strong> · "
+                f"Indexed new: <strong>{ap_index_feedback.get('new_articles_indexed', 0)}</strong></div>"
+            ),
+            unsafe_allow_html=True,
+        )
 
 with bbc_col:
     st.markdown(
@@ -706,13 +779,23 @@ with bbc_col:
         )
 
     bbc_scrape_active = bool(st.session_state.bbc_scrape_active)
-    bbc_scrape_clicked = st.button(
-        "Stop Scraping" if bbc_scrape_active else "Data Scrape",
-        key="bbc_data_scrape",
-        use_container_width=True,
-    )
+    bbc_action_col_left, bbc_action_col_right = st.columns(2, gap="small")
+    with bbc_action_col_left:
+        bbc_scrape_clicked = st.button(
+            "Stop Scraping" if bbc_scrape_active else "Data Scrape",
+            key="bbc_data_scrape",
+            use_container_width=True,
+        )
+    with bbc_action_col_right:
+        bbc_index_clicked = st.button(
+            "Index Data",
+            key="bbc_index_data_btn",
+            use_container_width=True,
+            disabled=not model_discovery.get("available"),
+        )
 
     if bbc_query_clicked:
+        st.session_state.bbc_scrape_status = "querying/discovering"
         with st.spinner("Querying BBC archive metadata for selected date..."):
             st.session_state.bbc_query_result = run_article_count_query_by_date(
                 source_name="bbc",
@@ -737,28 +820,43 @@ with bbc_col:
     elif bbc_scrape_clicked and bbc_scrape_active:
         run_stop_pipeline_by_date(source_name="bbc")
         st.session_state.bbc_stop_requested = True
+        st.session_state.bbc_scrape_status = "stopped"
         st.session_state.bbc_scrape_feedback = "Stopping BBC scrape..."
+
+    if bbc_index_clicked:
+        with st.spinner("Indexing BBC local corpus..."):
+            st.session_state.bbc_index_feedback = ingest_new_articles(
+                embedding_model=st.session_state.selected_embedding_model,
+                answer_model=st.session_state.selected_answer_model,
+                source_partition=BBC_SOURCE_DIRNAME,
+            )
 
     bbc_result = _poll_date_scrape_result("bbc", "bbc_scrape_queue")
     if bbc_result is not None:
         st.session_state.analysis_result = bbc_result
         st.session_state.bbc_scrape_active = False
         st.session_state.bbc_scrape_thread = None
+        if st.session_state.bbc_scrape_started_at:
+            st.session_state.bbc_last_elapsed_seconds = int(time.time() - st.session_state.bbc_scrape_started_at)
         st.session_state.bbc_scrape_started_at = 0.0
         bbc_ok = bbc_result.get("ok") == "true"
         if bbc_ok:
             bbc_scraped = bbc_result.get("articles_scraped", 0)
             bbc_attempted = bbc_result.get("articles_attempted", 0)
             if bbc_result.get("scrape_stopped_by_user"):
+                st.session_state.bbc_scrape_status = "stopped"
                 st.session_state.bbc_scrape_feedback = (
-                    f"Scrape stopped by user. Attempted: {bbc_attempted} · Scraped: {bbc_scraped}."
+                    "Scrape stopped by user. "
+                    f"Attempted: {bbc_attempted} · Scraped: {bbc_scraped} · Elapsed: {_format_elapsed(st.session_state.bbc_last_elapsed_seconds)}."
                 )
             else:
+                st.session_state.bbc_scrape_status = "completed"
                 st.session_state.bbc_scrape_feedback = (
                     "BBC scrape complete. "
-                    f"Attempted: {bbc_attempted} · Scraped: {bbc_scraped}."
+                    f"Attempted: {bbc_attempted} · Scraped: {bbc_scraped} · Elapsed: {_format_elapsed(st.session_state.bbc_last_elapsed_seconds)}."
                 )
         else:
+            st.session_state.bbc_scrape_status = "idle"
             st.session_state.bbc_scrape_feedback = _format_bbc_user_error(
                 bbc_result.get("error", "BBC scrape failed.")
             )
@@ -781,20 +879,11 @@ with bbc_col:
         else:
             st.warning(_format_bbc_user_error(bbc_query_result.get("error", "BBC count query failed.")))
 
-    bbc_query_diagnostics = bbc_query_result.get("diagnostics", []) if bbc_query_result else []
-    if bbc_query_diagnostics:
-        st.markdown(
-            f'<div class="small">Diagnostics: {" · ".join(bbc_query_diagnostics[:3])}</div>',
-            unsafe_allow_html=True,
-        )
-
-    latest_bbc_pipeline = st.session_state.analysis_result if st.session_state.analysis_result else {}
-    if latest_bbc_pipeline.get("fetch_diagnostics") and latest_bbc_pipeline.get("ok") == "true":
-        diagnostics_text = " · ".join(latest_bbc_pipeline.get("fetch_diagnostics", [])[:3])
-        st.markdown(f'<div class="small">Scrape diagnostics: {diagnostics_text}</div>', unsafe_allow_html=True)
-
+    st.markdown(
+        f'<div class="small">Scrape status: <strong>{st.session_state.bbc_scrape_status}</strong></div>',
+        unsafe_allow_html=True,
+    )
     if st.session_state.bbc_scrape_active:
-        st.markdown('<div class="small"><strong>Scrape active…</strong></div>', unsafe_allow_html=True)
         _render_scrape_loading_bar("bbc")
     if st.session_state.bbc_scrape_feedback:
         st.markdown(f'<div class="small">{st.session_state.bbc_scrape_feedback}</div>', unsafe_allow_html=True)
@@ -821,7 +910,23 @@ with bbc_col:
         ),
         unsafe_allow_html=True,
     )
+    bbc_index_feedback = st.session_state.bbc_index_feedback
+    if bbc_index_feedback:
+        st.markdown(
+            (
+                '<div class="small">BBC index update · '
+                f"Inspected: <strong>{bbc_index_feedback.get('total_discovered', 0)}</strong> · "
+                f"Indexed new: <strong>{bbc_index_feedback.get('new_articles_indexed', 0)}</strong></div>"
+            ),
+            unsafe_allow_html=True,
+        )
 st.markdown("</section>", unsafe_allow_html=True)
+
+if st.session_state.ap_scrape_active or st.session_state.bbc_scrape_active:
+    now_ts = time.time()
+    if now_ts - float(st.session_state.last_live_refresh_at or 0.0) >= 1.0:
+        st.session_state.last_live_refresh_at = now_ts
+        st.rerun()
 
 view = st.radio(
     "Dashboard View",

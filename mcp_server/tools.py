@@ -9,6 +9,7 @@ from collections import Counter
 from html import unescape
 from html.parser import HTMLParser
 from threading import Event
+from typing import Any
 from urllib.parse import urljoin, urlparse, urlunparse
 import xml.etree.ElementTree as ET
 
@@ -1147,6 +1148,7 @@ def scrape_source_articles_by_date(
     source_name: str,
     date_str: str,
     max_articles: int = 200,
+    progress_callback: Any | None = None,
 ) -> dict:
     """Full date-based scrape workflow for supported sources."""
     source_key = source_name.strip().lower()
@@ -1163,6 +1165,15 @@ def scrape_source_articles_by_date(
         query_date=query_date,
         max_links=max_articles * 3,
     )
+    if progress_callback:
+        progress_callback(
+            {
+                "event": "discover_complete",
+                "source_name": source_key,
+                "links_found": len(links),
+                "max_articles": max_articles,
+            }
+        )
     if not links:
         label = SOURCE_DATE_CONFIG[source_key]["label"]
         raise RuntimeError(
@@ -1190,10 +1201,31 @@ def scrape_source_articles_by_date(
         if cancel_event.is_set():
             stopped_by_user = True
             diagnostics.append(f"scrape_stopped_by_user:{source_key}")
+            if progress_callback:
+                progress_callback(
+                    {
+                        "event": "stopped",
+                        "source_name": source_key,
+                        "articles_attempted": attempted_articles,
+                        "articles_scraped": len(scraped_articles),
+                        "articles_failed": len(failed_urls),
+                        "max_articles": max_articles,
+                    }
+                )
             break
         if attempted_articles >= max_articles:
             break
         attempted_articles += 1
+        if progress_callback:
+            progress_callback(
+                {
+                    "event": "article_started",
+                    "source_name": source_key,
+                    "article_position": attempted_articles,
+                    "links_found": len(links),
+                    "max_articles": max_articles,
+                }
+            )
         try:
             article_html = fetch_url(link["url"], timeout=14, session=session)
             page_title = extract_document_title(article_html) or link.get("title", "") or link["url"]
@@ -1286,9 +1318,33 @@ def scrape_source_articles_by_date(
                         "status": "duplicate",
                     }
                 )
+            if progress_callback:
+                progress_callback(
+                    {
+                        "event": "article_done",
+                        "source_name": source_key,
+                        "articles_attempted": attempted_articles,
+                        "articles_scraped": len(scraped_articles),
+                        "articles_failed": len(failed_urls),
+                        "links_found": len(links),
+                        "max_articles": max_articles,
+                    }
+                )
         except Exception as exc:
             diagnostics.append(f"article_fetch_failed:{link['url']}:{exc}")
             failed_urls.append(link["url"])
+            if progress_callback:
+                progress_callback(
+                    {
+                        "event": "article_failed",
+                        "source_name": source_key,
+                        "articles_attempted": attempted_articles,
+                        "articles_scraped": len(scraped_articles),
+                        "articles_failed": len(failed_urls),
+                        "links_found": len(links),
+                        "max_articles": max_articles,
+                    }
+                )
 
     table_rows = []
     article_count = len(scraped_articles)
