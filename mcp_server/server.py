@@ -28,6 +28,8 @@ def run_pipeline(
             "articles_attempted": 0,
             "articles_scraped": 0,
             "articles_failed": 0,
+            "articles_new_saved": 0,
+            "articles_duplicates_skipped": 0,
             "scraped_preview": [],
             "top_words": [],
             "summary": "",
@@ -37,6 +39,8 @@ def run_pipeline(
             "keyword": keyword.strip(),
             "article_corpus": [],
             "persisted_articles": [],
+            "duplicate_articles": [],
+            "article_manifest_path": "",
             "run_index_path": "",
         }
     except Exception as exc:
@@ -47,6 +51,8 @@ def run_pipeline(
             "articles_attempted": 0,
             "articles_scraped": 0,
             "articles_failed": 0,
+            "articles_new_saved": 0,
+            "articles_duplicates_skipped": 0,
             "scraped_preview": [],
             "top_words": [],
             "summary": "",
@@ -56,6 +62,8 @@ def run_pipeline(
             "keyword": keyword.strip(),
             "article_corpus": [],
             "persisted_articles": [],
+            "duplicate_articles": [],
+            "article_manifest_path": "",
             "run_index_path": "",
         }
 
