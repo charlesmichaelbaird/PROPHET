@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
-from mcp_server.tools import request_scrape_stop, scrape_source_articles_by_date
+from mcp_server.tools import query_source_article_count_by_date, request_scrape_stop, scrape_source_articles_by_date
 
 
 class TestDateScrapeBehavior(unittest.TestCase):
@@ -77,6 +77,29 @@ class TestDateScrapeBehavior(unittest.TestCase):
         self.assertTrue(
             any("filtered_non_english_lang_decl" in row for row in result.get("fetch_diagnostics", []))
         )
+
+    def test_propublica_scrape_skips_non_english_page(self) -> None:
+        def _fake_discover(source_name: str, query_date, max_links: int):  # type: ignore[no-untyped-def]
+            return ([{"url": "https://www.propublica.org/espanol/story", "title": "ES", "publication_date": "", "lastmod": ""}], [], "")
+
+        with (
+            patch("mcp_server.tools._discover_articles_by_date", side_effect=_fake_discover),
+            patch("mcp_server.tools.fetch_url", return_value='<html lang="es"><p>Hola noticia.</p></html>'),
+            patch("mcp_server.tools.persist_article_if_new") as persist_mock,
+            patch("mcp_server.tools.write_run_index", return_value="run-index.json"),
+        ):
+            result = scrape_source_articles_by_date(source_name="propublica", date_str="03/25/2026", max_articles=1)
+
+        self.assertEqual(result["articles_scraped"], 0)
+        self.assertFalse(persist_mock.called)
+        self.assertTrue(any("filtered_non_english_propublica" in row for row in result.get("fetch_diagnostics", [])))
+
+    def test_aljazeera_query_returns_zero_results_without_exception(self) -> None:
+        with patch("mcp_server.tools._discover_articles_by_date", return_value=([], ["no_date_matches:sitemap"], "index.xml")):
+            result = query_source_article_count_by_date(source_name="aljazeera", date_str="03/25/2026", max_links=10)
+
+        self.assertEqual(result["links_found"], 0)
+        self.assertEqual(result["discovery_status"], "no_results")
 
 
 if __name__ == "__main__":

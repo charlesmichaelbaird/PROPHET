@@ -172,66 +172,90 @@ if "aj_query_result" not in st.session_state:
     st.session_state.aj_query_result = {}
 if "aj_scrape_feedback" not in st.session_state:
     st.session_state.aj_scrape_feedback = ""
+if "pp_query_result" not in st.session_state:
+    st.session_state.pp_query_result = {}
+if "propublica_scrape_feedback" not in st.session_state:
+    st.session_state.propublica_scrape_feedback = ""
 if "ap_selected_date" not in st.session_state:
     st.session_state.ap_selected_date = datetime.now(timezone.utc).strftime("%m/%d/%Y")
 if "bbc_selected_date" not in st.session_state:
     st.session_state.bbc_selected_date = datetime.now(timezone.utc).strftime("%m/%d/%Y")
 if "aj_selected_date" not in st.session_state:
     st.session_state.aj_selected_date = datetime.now(timezone.utc).strftime("%m/%d/%Y")
+if "pp_selected_date" not in st.session_state:
+    st.session_state.pp_selected_date = datetime.now(timezone.utc).strftime("%m/%d/%Y")
 if "ap_scrape_active" not in st.session_state:
     st.session_state.ap_scrape_active = False
 if "bbc_scrape_active" not in st.session_state:
     st.session_state.bbc_scrape_active = False
 if "aj_scrape_active" not in st.session_state:
     st.session_state.aj_scrape_active = False
+if "propublica_scrape_active" not in st.session_state:
+    st.session_state.propublica_scrape_active = False
 if "ap_scrape_thread" not in st.session_state:
     st.session_state.ap_scrape_thread = None
 if "bbc_scrape_thread" not in st.session_state:
     st.session_state.bbc_scrape_thread = None
 if "aj_scrape_thread" not in st.session_state:
     st.session_state.aj_scrape_thread = None
+if "propublica_scrape_thread" not in st.session_state:
+    st.session_state.propublica_scrape_thread = None
 if "ap_scrape_queue" not in st.session_state:
     st.session_state.ap_scrape_queue = Queue()
 if "bbc_scrape_queue" not in st.session_state:
     st.session_state.bbc_scrape_queue = Queue()
 if "aj_scrape_queue" not in st.session_state:
     st.session_state.aj_scrape_queue = Queue()
+if "pp_scrape_queue" not in st.session_state:
+    st.session_state.pp_scrape_queue = Queue()
 if "ap_stop_requested" not in st.session_state:
     st.session_state.ap_stop_requested = False
 if "bbc_stop_requested" not in st.session_state:
     st.session_state.bbc_stop_requested = False
 if "aj_stop_requested" not in st.session_state:
     st.session_state.aj_stop_requested = False
+if "propublica_stop_requested" not in st.session_state:
+    st.session_state.propublica_stop_requested = False
 if "ap_scrape_started_at" not in st.session_state:
     st.session_state.ap_scrape_started_at = 0.0
 if "bbc_scrape_started_at" not in st.session_state:
     st.session_state.bbc_scrape_started_at = 0.0
 if "aj_scrape_started_at" not in st.session_state:
     st.session_state.aj_scrape_started_at = 0.0
+if "propublica_scrape_started_at" not in st.session_state:
+    st.session_state.propublica_scrape_started_at = 0.0
 if "ap_scrape_status" not in st.session_state:
     st.session_state.ap_scrape_status = "idle"
 if "bbc_scrape_status" not in st.session_state:
     st.session_state.bbc_scrape_status = "idle"
 if "aj_scrape_status" not in st.session_state:
     st.session_state.aj_scrape_status = "idle"
+if "propublica_scrape_status" not in st.session_state:
+    st.session_state.propublica_scrape_status = "idle"
 if "ap_scrape_progress" not in st.session_state:
     st.session_state.ap_scrape_progress = {}
 if "bbc_scrape_progress" not in st.session_state:
     st.session_state.bbc_scrape_progress = {}
 if "aj_scrape_progress" not in st.session_state:
     st.session_state.aj_scrape_progress = {}
+if "propublica_scrape_progress" not in st.session_state:
+    st.session_state.propublica_scrape_progress = {}
 if "ap_last_elapsed_seconds" not in st.session_state:
     st.session_state.ap_last_elapsed_seconds = 0
 if "bbc_last_elapsed_seconds" not in st.session_state:
     st.session_state.bbc_last_elapsed_seconds = 0
 if "aj_last_elapsed_seconds" not in st.session_state:
     st.session_state.aj_last_elapsed_seconds = 0
+if "propublica_last_elapsed_seconds" not in st.session_state:
+    st.session_state.propublica_last_elapsed_seconds = 0
 if "ap_index_feedback" not in st.session_state:
     st.session_state.ap_index_feedback = {}
 if "bbc_index_feedback" not in st.session_state:
     st.session_state.bbc_index_feedback = {}
 if "aj_index_feedback" not in st.session_state:
     st.session_state.aj_index_feedback = {}
+if "pp_index_feedback" not in st.session_state:
+    st.session_state.pp_index_feedback = {}
 if "last_live_refresh_at" not in st.session_state:
     st.session_state.last_live_refresh_at = 0.0
 
@@ -245,6 +269,9 @@ BBC_INDEX_PARTITION = "bbc"
 AJ_SOURCE_DIRNAME = "www-aljazeera-com"
 AJ_SCRAPE_FALLBACK_MAX_ARTICLES = 200
 AJ_INDEX_PARTITION = "aljazeera-com"
+PP_SOURCE_DIRNAME = "propublica"
+PP_SCRAPE_FALLBACK_MAX_ARTICLES = 200
+PP_INDEX_PARTITION = "propublica"
 
 
 def _start_date_scrape_worker(source_name: str, date_str: str, max_articles: int, queue_key: str) -> None:
@@ -530,6 +557,13 @@ def _count_locally_scraped_aj_articles() -> int:
     return sum(1 for _ in processed_root.glob("*/*/metadata.json"))
 
 
+def _count_locally_scraped_pp_articles() -> int:
+    processed_root = REPO_ROOT / "data" / "processed" / PP_SOURCE_DIRNAME
+    if not processed_root.exists():
+        return 0
+    return sum(1 for _ in processed_root.glob("*/*/metadata.json"))
+
+
 def _indexed_count_for_source(index_status_payload: dict, source_partitions: list[str]) -> int:
     source_keys = [key.strip().lower() for key in source_partitions if key.strip()]
     source_counts = index_status_payload.get("indexed_counts_by_source", {}) or {}
@@ -565,6 +599,18 @@ def _format_bbc_user_error(error_message: str) -> str:
             "Try again later or use an alternate BBC discovery path."
         )
     return error_message or "BBC request failed."
+
+
+def _format_aj_user_error(error_message: str) -> str:
+    normalized = (error_message or "").lower()
+    if "query failed" in normalized or "could not be parsed or fetched" in normalized:
+        return (
+            "Al Jazeera archive query failed (fetch/parser issue). "
+            "This is different from zero results; check diagnostics and retry later."
+        )
+    if "returned no article links" in normalized:
+        return "Al Jazeera discovery ran but found 0 English candidate links for the selected date."
+    return error_message or "Al Jazeera request failed."
 
 
 st.markdown('<section class="hero">', unsafe_allow_html=True)
@@ -715,10 +761,10 @@ with hero_right:
 st.markdown("</section>", unsafe_allow_html=True)
 
 st.markdown('<section class="source-banner">', unsafe_allow_html=True)
-st.markdown('<div class="panel-title">Source Ingestion · AP News + BBC + Al Jazeera English</div>', unsafe_allow_html=True)
+st.markdown('<div class="panel-title">Source Ingestion · AP News + BBC + Al Jazeera English + ProPublica</div>', unsafe_allow_html=True)
 banner_left, banner_middle, banner_right = st.columns([0.5, 3.2, 0.5], gap="large")
 with banner_middle:
-    ap_col, bbc_col, aj_col = st.columns(3, gap="large")
+    ap_col, bbc_col, aj_col, pp_col = st.columns(4, gap="large")
 
 with ap_col:
     st.markdown(
@@ -1159,20 +1205,24 @@ with aj_col:
     aj_query_result = st.session_state.aj_query_result
     if aj_query_result:
         if aj_query_result.get("ok") == "true":
-            st.markdown(
-                (
-                    '<div class="small">Discovery complete · Candidate Al Jazeera links: '
-                    f"<strong>{aj_query_result.get('links_found', 0)}</strong></div>"
-                ),
-                unsafe_allow_html=True,
-            )
+            aj_links_found = int(aj_query_result.get("links_found", 0))
+            if aj_links_found > 0:
+                st.markdown(
+                    (
+                        '<div class="small">Discovery complete · Candidate Al Jazeera links: '
+                        f"<strong>{aj_links_found}</strong></div>"
+                    ),
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.info(aj_query_result.get("status_message", "No Al Jazeera results for selected date."))
             aj_preview = aj_query_result.get("preview", [])
             if aj_preview:
                 st.markdown('<div class="small">Preview:</div>', unsafe_allow_html=True)
                 for item in aj_preview[:5]:
                     st.markdown(f"- [{item.get('title', item.get('url', ''))}]({item.get('url', '')})")
         else:
-            st.warning(aj_query_result.get("error", "Al Jazeera count query failed."))
+            st.warning(_format_aj_user_error(aj_query_result.get("error", "Al Jazeera count query failed.")))
 
     st.markdown(
         f'<div class="small">Scrape status: <strong>{st.session_state.aj_scrape_status}</strong></div>',
@@ -1219,9 +1269,184 @@ with aj_col:
             ),
             unsafe_allow_html=True,
         )
+
+with pp_col:
+    st.markdown(
+        (
+            '<div class="source-card">'
+            '<div style="font-size:1.35rem;">🔎</div>'
+            '<div class="source-card-label">ProPublica</div>'
+            '<div class="source-card-url">Date-based sitemap discovery (English only)</div>'
+            "</div>"
+        ),
+        unsafe_allow_html=True,
+    )
+
+    pp_query_date_col, pp_query_button_col = st.columns([1.25, 1], gap="small")
+    with pp_query_date_col:
+        st.text_input(
+            "Date (MM/DD/YYYY)",
+            key="pp_selected_date",
+            label_visibility="collapsed",
+            placeholder="MM/DD/YYYY",
+        )
+    with pp_query_button_col:
+        pp_query_clicked = st.button(
+            "Article Count",
+            key="pp_query_site_article_count",
+            use_container_width=True,
+        )
+
+    pp_scrape_active = bool(st.session_state.propublica_scrape_active)
+    pp_action_col_left, pp_action_col_right = st.columns(2, gap="small")
+    with pp_action_col_left:
+        pp_scrape_clicked = st.button(
+            "Stop Scraping" if pp_scrape_active else "Data Scrape",
+            key="pp_data_scrape",
+            use_container_width=True,
+        )
+    with pp_action_col_right:
+        pp_index_clicked = st.button(
+            "Index Data",
+            key="pp_index_data_btn",
+            use_container_width=True,
+            disabled=not model_discovery.get("available"),
+        )
+
+    if pp_query_clicked:
+        st.session_state.propublica_scrape_status = "querying/discovering"
+        with st.spinner("Querying ProPublica archive metadata for selected date..."):
+            st.session_state.pp_query_result = run_article_count_query_by_date(
+                source_name="propublica",
+                date_str=st.session_state.pp_selected_date,
+                max_links=250,
+            )
+
+    if pp_scrape_clicked and not pp_scrape_active:
+        latest_pp_query = st.session_state.pp_query_result if st.session_state.pp_query_result.get("ok") == "true" else {}
+        requested_pp_scrape_count = int(latest_pp_query.get("links_found", 0)) or PP_SCRAPE_FALLBACK_MAX_ARTICLES
+        st.session_state.propublica_scrape_feedback = "ProPublica scrape active..."
+        _start_date_scrape_worker(
+            source_name="propublica",
+            date_str=st.session_state.pp_selected_date,
+            max_articles=requested_pp_scrape_count,
+            queue_key="pp_scrape_queue",
+        )
+    elif pp_scrape_clicked and pp_scrape_active:
+        run_stop_pipeline_by_date(source_name="propublica")
+        st.session_state.propublica_stop_requested = True
+        st.session_state.propublica_scrape_status = "stopped"
+        st.session_state.propublica_scrape_feedback = "Stopping ProPublica scrape..."
+
+    if pp_index_clicked:
+        st.session_state.pp_index_feedback = _run_source_indexing(
+            source_partition=PP_INDEX_PARTITION,
+            source_label="ProPublica",
+        )
+
+    pp_result = _poll_date_scrape_result("propublica", "pp_scrape_queue")
+    if pp_result is not None:
+        st.session_state.analysis_result = pp_result
+        st.session_state.propublica_scrape_active = False
+        st.session_state.propublica_scrape_thread = None
+        if st.session_state.propublica_scrape_started_at:
+            st.session_state.propublica_last_elapsed_seconds = int(time.time() - st.session_state.propublica_scrape_started_at)
+        st.session_state.propublica_scrape_started_at = 0.0
+        pp_ok = pp_result.get("ok") == "true"
+        if pp_ok:
+            pp_scraped = pp_result.get("articles_scraped", 0)
+            pp_attempted = pp_result.get("articles_attempted", 0)
+            if pp_result.get("scrape_stopped_by_user"):
+                st.session_state.propublica_scrape_status = "stopped"
+                st.session_state.propublica_scrape_feedback = (
+                    "Scrape stopped by user. "
+                    f"Attempted: {pp_attempted} · Scraped: {pp_scraped} · Elapsed: {_format_elapsed(st.session_state.propublica_last_elapsed_seconds)}."
+                )
+            else:
+                st.session_state.propublica_scrape_status = "completed"
+                st.session_state.propublica_scrape_feedback = (
+                    "ProPublica scrape complete. "
+                    f"Attempted: {pp_attempted} · Scraped: {pp_scraped} · Elapsed: {_format_elapsed(st.session_state.propublica_last_elapsed_seconds)}."
+                )
+        else:
+            st.session_state.propublica_scrape_status = "idle"
+            st.session_state.propublica_scrape_feedback = pp_result.get("error", "ProPublica scrape failed.")
+
+    pp_query_result = st.session_state.pp_query_result
+    if pp_query_result:
+        if pp_query_result.get("ok") == "true":
+            links_found = int(pp_query_result.get("links_found", 0))
+            if links_found > 0:
+                st.markdown(
+                    (
+                        '<div class="small">Discovery complete · Candidate ProPublica links: '
+                        f"<strong>{links_found}</strong></div>"
+                    ),
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.info(pp_query_result.get("status_message", "No ProPublica results for selected date."))
+            pp_preview = pp_query_result.get("preview", [])
+            if pp_preview:
+                st.markdown('<div class="small">Preview:</div>', unsafe_allow_html=True)
+                for item in pp_preview[:5]:
+                    st.markdown(f"- [{item.get('title', item.get('url', ''))}]({item.get('url', '')})")
+        else:
+            st.warning(pp_query_result.get("error", "ProPublica count query failed."))
+
+    st.markdown(
+        f'<div class="small">Scrape status: <strong>{st.session_state.propublica_scrape_status}</strong></div>',
+        unsafe_allow_html=True,
+    )
+    if st.session_state.propublica_scrape_active:
+        _render_scrape_loading_bar("propublica")
+    if st.session_state.propublica_scrape_feedback:
+        st.markdown(f'<div class="small">{st.session_state.propublica_scrape_feedback}</div>', unsafe_allow_html=True)
+    elif pp_query_result and pp_query_result.get("ok") == "true":
+        st.markdown(
+            (
+                '<div class="small">Data Scrape will target the latest discovered count: '
+                f"<strong>{pp_query_result.get('links_found', 0)}</strong> candidate links.</div>"
+            ),
+            unsafe_allow_html=True,
+        )
+    st.markdown(
+        f'<div class="small">Selected date: <strong>{st.session_state.pp_selected_date}</strong></div>',
+        unsafe_allow_html=True,
+    )
+
+    pp_scraped_local_count = _count_locally_scraped_pp_articles()
+    pp_discovered_count = pp_query_result.get("links_found", 0) if pp_query_result else 0
+    pp_indexed_count = _indexed_count_for_source(index_status, [PP_INDEX_PARTITION, PP_SOURCE_DIRNAME, "propublica-org"])
+    st.markdown(
+        (
+            '<div class="small">ProPublica corpus status · '
+            f"Discovered (latest query): <strong>{pp_discovered_count}</strong> · "
+            f"Scraped locally: <strong>{pp_scraped_local_count}</strong> · "
+            f"Indexed: <strong>{pp_indexed_count}</strong></div>"
+        ),
+        unsafe_allow_html=True,
+    )
+    pp_index_feedback = st.session_state.pp_index_feedback
+    if pp_index_feedback:
+        pp_eligible = int(pp_index_feedback.get("eligible_for_indexing", pp_index_feedback.get("new_articles_indexed", 0)))
+        pp_indexed = int(pp_index_feedback.get("new_articles_indexed", 0))
+        st.markdown(
+            (
+                '<div class="small">ProPublica index update · '
+                f"Indexed: <strong>{pp_indexed}</strong> / <strong>{pp_eligible}</strong> · "
+                f"Remaining: <strong>{max(pp_eligible - pp_indexed, 0)}</strong></div>"
+            ),
+            unsafe_allow_html=True,
+        )
 st.markdown("</section>", unsafe_allow_html=True)
 
-if st.session_state.ap_scrape_active or st.session_state.bbc_scrape_active or st.session_state.aj_scrape_active:
+if (
+    st.session_state.ap_scrape_active
+    or st.session_state.bbc_scrape_active
+    or st.session_state.aj_scrape_active
+    or st.session_state.propublica_scrape_active
+):
     now_ts = time.time()
     if now_ts - float(st.session_state.last_live_refresh_at or 0.0) >= 1.0:
         st.session_state.last_live_refresh_at = now_ts

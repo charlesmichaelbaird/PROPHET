@@ -12,6 +12,13 @@ from urllib.parse import urlparse
 
 DEFAULT_DATA_DIR = Path(__file__).resolve().parents[1] / "data"
 ARTICLE_INDEX_FILENAME = "article_manifest.json"
+SOURCE_NAME_OVERRIDES = {
+    "apnews.com": "apnews-com",
+    "www.bbc.com": "www-bbc-com",
+    "www.aljazeera.com": "www-aljazeera-com",
+    "www.propublica.org": "propublica",
+    "propublica.org": "propublica",
+}
 
 
 
@@ -48,6 +55,8 @@ def _slugify(value: str, max_len: int = 80) -> str:
 
 def _safe_source_name(homepage_url: str) -> str:
     netloc = urlparse(homepage_url).netloc.lower() or "unknown-source"
+    if netloc in SOURCE_NAME_OVERRIDES:
+        return SOURCE_NAME_OVERRIDES[netloc]
     return _slugify(netloc.replace(".", "-"), max_len=60)
 
 
