@@ -11,7 +11,7 @@ from html import unescape
 from html.parser import HTMLParser
 from threading import Event
 from typing import Any
-from urllib.parse import urljoin, urlparse, urlunparse
+from urllib.parse import parse_qs, urljoin, urlparse, urlunparse
 import xml.etree.ElementTree as ET
 
 import requests
@@ -513,8 +513,24 @@ def _entry_matches_date(entry: dict[str, str], target_date: datetime) -> bool:
     url = entry.get("url", "")
     if not url:
         return False
-    date_path = target_date.strftime("%Y/%m/%d")
-    return f"/{date_path}/" in url
+    date_path_padded = target_date.strftime("%Y/%m/%d")
+    date_path_unpadded = f"{target_date.year}/{target_date.month}/{target_date.day}"
+    return f"/{date_path_padded}/" in url or f"/{date_path_unpadded}/" in url
+
+
+def _sitemap_url_targets_date(sitemap_url: str, target_date: datetime) -> bool:
+    parsed = urlparse(sitemap_url)
+    params = parse_qs(parsed.query)
+    yyyy = (params.get("yyyy") or [""])[0]
+    mm = (params.get("mm") or [""])[0]
+    dd = (params.get("dd") or [""])[0]
+    if not (yyyy and mm and dd):
+        return False
+    try:
+        hinted_date = datetime(year=int(yyyy), month=int(mm), day=int(dd), tzinfo=timezone.utc)
+    except ValueError:
+        return False
+    return hinted_date.date() == target_date.date()
 
 
 def _is_english_candidate_url(source_name: str, candidate_url: str) -> bool:
@@ -657,7 +673,9 @@ def _discover_articles_by_date(
                 if not _is_english_candidate_url(source_name, url):
                     diagnostics.append(f"filtered_non_english_url:{url}")
                     continue
-                if not _entry_matches_date(entry, query_date):
+                if source_name == "propublica" and _sitemap_url_targets_date(sitemap_url, query_date):
+                    pass
+                elif not _entry_matches_date(entry, query_date):
                     continue
                 seen.add(url)
                 discovered.append(

@@ -3,7 +3,15 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
-from mcp_server.tools import query_source_article_count_by_date, request_scrape_stop, scrape_source_articles_by_date
+from datetime import datetime
+
+from mcp_server.tools import (
+    _discover_articles_by_date,
+    _entry_matches_date,
+    query_source_article_count_by_date,
+    request_scrape_stop,
+    scrape_source_articles_by_date,
+)
 
 
 class TestDateScrapeBehavior(unittest.TestCase):
@@ -100,6 +108,36 @@ class TestDateScrapeBehavior(unittest.TestCase):
 
         self.assertEqual(result["links_found"], 0)
         self.assertEqual(result["discovery_status"], "no_results")
+
+    def test_entry_date_match_supports_unpadded_url_dates(self) -> None:
+        target_date = datetime.strptime("03/26/2026", "%m/%d/%Y")
+        entry = {"url": "https://www.aljazeera.com/news/2026/3/26/story", "publication_date": "", "lastmod": ""}
+        self.assertTrue(_entry_matches_date(entry, target_date))
+
+    def test_propublica_date_hinted_sitemap_entries_are_accepted(self) -> None:
+        query_date = datetime.strptime("03/26/2026", "%m/%d/%Y")
+        index_xml = (
+            "<sitemapindex>"
+            "<sitemap><loc>https://www.propublica.org/sitemap.xml?yyyy=2026&amp;mm=03&amp;dd=26</loc></sitemap>"
+            "</sitemapindex>"
+        )
+        day_xml = (
+            "<urlset>"
+            "<url><loc>https://www.propublica.org/article/example-story</loc><title>Example Story</title></url>"
+            "</urlset>"
+        )
+
+        def _fake_fetch(url: str, timeout: int = 0, session=None, **kwargs):  # type: ignore[no-untyped-def]
+            if "yyyy=2026" in url:
+                return day_xml
+            return index_xml
+
+        with patch("mcp_server.tools.fetch_url", side_effect=_fake_fetch):
+            links, diagnostics, _ = _discover_articles_by_date("propublica", query_date, max_links=10)
+
+        self.assertEqual(len(links), 1)
+        self.assertEqual(links[0]["url"], "https://www.propublica.org/article/example-story")
+        self.assertTrue(any("date_matches" in row for row in diagnostics))
 
 
 if __name__ == "__main__":

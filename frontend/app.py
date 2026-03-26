@@ -76,6 +76,7 @@ html, body, [data-testid="stAppViewContainer"], .stApp {
 .stButton > button {
   border-radius: 10px; border: 1px solid rgba(138, 183, 255, 0.4); background: linear-gradient(130deg, #163769, #1f5f8d);
   color: #eaf5ff; font-weight: 700;
+  padding-top: 0.22rem; padding-bottom: 0.22rem; line-height: 1.05; min-height: 1.9rem;
 }
 [data-testid="stToggle"] [role="switch"][aria-checked="true"] {
   background-color: #1f9d55 !important;
@@ -793,7 +794,7 @@ with ap_col:
     ap_action_col_left, ap_action_col_right = st.columns(2, gap="small")
     with ap_action_col_left:
         scrape_clicked = st.button(
-            "Stop Scraping" if ap_scrape_active else "Data Scrape",
+            "Stop Scraping" if ap_scrape_active else "Scrape Data",
             use_container_width=True,
             key="ap_data_scrape_btn",
         )
@@ -893,7 +894,7 @@ with ap_col:
     elif query_result and query_result.get("ok") == "true":
         st.markdown(
             (
-                '<div class="small">Data Scrape will target the latest discovered count: '
+                '<div class="small">Scrape Data will target the latest discovered count: '
                 f"<strong>{query_result.get('links_found', 0)}</strong> candidate links.</div>"
             ),
             unsafe_allow_html=True,
@@ -959,7 +960,7 @@ with bbc_col:
     bbc_action_col_left, bbc_action_col_right = st.columns(2, gap="small")
     with bbc_action_col_left:
         bbc_scrape_clicked = st.button(
-            "Stop Scraping" if bbc_scrape_active else "Data Scrape",
+            "Stop Scraping" if bbc_scrape_active else "Scrape Data",
             key="bbc_data_scrape",
             use_container_width=True,
         )
@@ -1065,7 +1066,7 @@ with bbc_col:
     elif bbc_query_result and bbc_query_result.get("ok") == "true":
         st.markdown(
             (
-                '<div class="small">Data Scrape will target the latest discovered count: '
+                '<div class="small">Scrape Data will target the latest discovered count: '
                 f"<strong>{bbc_query_result.get('links_found', 0)}</strong> candidate links.</div>"
             ),
             unsafe_allow_html=True,
@@ -1131,7 +1132,7 @@ with aj_col:
     aj_action_col_left, aj_action_col_right = st.columns(2, gap="small")
     with aj_action_col_left:
         aj_scrape_clicked = st.button(
-            "Stop Scraping" if aj_scrape_active else "Data Scrape",
+            "Stop Scraping" if aj_scrape_active else "Scrape Data",
             key="aj_data_scrape",
             use_container_width=True,
         )
@@ -1235,7 +1236,7 @@ with aj_col:
     elif aj_query_result and aj_query_result.get("ok") == "true":
         st.markdown(
             (
-                '<div class="small">Data Scrape will target the latest discovered count: '
+                '<div class="small">Scrape Data will target the latest discovered count: '
                 f"<strong>{aj_query_result.get('links_found', 0)}</strong> candidate links.</div>"
             ),
             unsafe_allow_html=True,
@@ -1301,7 +1302,7 @@ with pp_col:
     pp_action_col_left, pp_action_col_right = st.columns(2, gap="small")
     with pp_action_col_left:
         pp_scrape_clicked = st.button(
-            "Stop Scraping" if pp_scrape_active else "Data Scrape",
+            "Stop Scraping" if pp_scrape_active else "Scrape Data",
             key="pp_data_scrape",
             use_container_width=True,
         )
@@ -1405,7 +1406,7 @@ with pp_col:
     elif pp_query_result and pp_query_result.get("ok") == "true":
         st.markdown(
             (
-                '<div class="small">Data Scrape will target the latest discovered count: '
+                '<div class="small">Scrape Data will target the latest discovered count: '
                 f"<strong>{pp_query_result.get('links_found', 0)}</strong> candidate links.</div>"
             ),
             unsafe_allow_html=True,
