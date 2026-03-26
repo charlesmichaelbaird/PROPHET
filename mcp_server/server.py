@@ -69,10 +69,20 @@ def run_pipeline(
         }
 
 
-def run_ask_the_prophet(question: str, article_corpus: list[dict[str, str]]) -> dict:
+def run_ask_the_prophet(
+    question: str,
+    article_corpus: list[dict[str, str]],
+    embedding_model: str = "",
+    answer_model: str = "",
+) -> dict:
     """Run grounded Q&A over the scraped article corpus."""
     try:
-        return ask_the_prophet(question=question, article_corpus=article_corpus)
+        return ask_the_prophet(
+            question=question,
+            article_corpus=article_corpus,
+            embedding_model=embedding_model,
+            answer_model=answer_model,
+        )
     except Exception as exc:
         return {
             "ok": "false",

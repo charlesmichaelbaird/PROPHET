@@ -6,8 +6,6 @@ from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import Mock, patch
 
-import requests
-
 from mcp_server.rag import (
     LocalVectorIndex,
     OllamaClient,
@@ -96,27 +94,17 @@ class TestRagPipeline(unittest.TestCase):
             timeout=60.0,
         )
 
-    def test_embed_falls_back_to_installed_model_list(self) -> None:
+    def test_embed_fails_clearly_when_selected_model_missing(self) -> None:
         client = OllamaClient(base_url="http://localhost:11434", embed_model="missing-model")
         tags_response = Mock(status_code=200)
         tags_response.json.return_value = {"models": [{"name": "nomic-embed-text:latest"}]}
 
-        fail_response = Mock(status_code=404)
-        fail_response.raise_for_status.side_effect = requests.exceptions.HTTPError("404 missing")
-        success_response = Mock(status_code=200)
-        success_response.json.return_value = {"embeddings": [[0.7, 0.8, 0.9]]}
-
         with patch("mcp_server.rag.requests.get") as mock_get, patch("mcp_server.rag.requests.post") as mock_post:
             mock_get.return_value = tags_response
-            mock_post.side_effect = [
-                fail_response,  # configured missing model on /api/embed
-                fail_response,  # configured missing model on legacy /api/embeddings
-                success_response,  # discovered embed model on /api/embed
-            ]
-            vector = client.embed("fallback text")
-
-        self.assertEqual(vector, [0.7, 0.8, 0.9])
-        self.assertEqual(client.embedding_mode, "current:/api/embed")
+            with self.assertRaises(RuntimeError) as err:
+                client.embed("fallback text")
+            self.assertIn("not installed", str(err.exception))
+            mock_post.assert_not_called()
 
     def test_embed_uses_legacy_variant_when_current_is_unavailable(self) -> None:
         client = OllamaClient(base_url="http://localhost:11434", embed_model="nomic-embed-text")

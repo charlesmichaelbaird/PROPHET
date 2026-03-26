@@ -702,7 +702,14 @@ def query_site_article_count(
 def ask_the_prophet(
     question: str,
     article_corpus: list[dict[str, str]],
+    embedding_model: str = "",
+    answer_model: str = "",
 ) -> dict:
     """Answer a question using local persistent vector retrieval + Ollama generation."""
     _ = article_corpus  # Legacy arg retained for API compatibility with UI/server wiring.
-    return answer_question(question=question, top_k=5)
+    return answer_question(
+        question=question,
+        top_k=5,
+        embedding_model=embedding_model,
+        answer_model=answer_model,
+    )

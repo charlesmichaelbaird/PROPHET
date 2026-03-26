@@ -21,7 +21,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from mcp_server.server import run_article_count_query, run_ask_the_prophet, run_pipeline
-from mcp_server.rag import get_indexing_status, ingest_new_articles
+from mcp_server.rag import discover_ollama_models, get_indexing_status, ingest_new_articles
 from frontend.btc_data import fetch_btc_history, fetch_spot_btc_price
 
 st.set_page_config(
@@ -128,6 +128,12 @@ if "ollama_last_error" not in st.session_state:
     st.session_state.ollama_last_error = ""
 if "ollama_host" not in st.session_state:
     st.session_state.ollama_host = os.getenv("PROPHET_OLLAMA_HOST", "http://localhost:11434")
+if "selected_embedding_model" not in st.session_state:
+    st.session_state.selected_embedding_model = ""
+if "selected_answer_model" not in st.session_state:
+    st.session_state.selected_answer_model = ""
+if "ollama_model_discovery" not in st.session_state:
+    st.session_state.ollama_model_discovery = {}
 if "ap_query_result" not in st.session_state:
     st.session_state.ap_query_result = {}
 if "ap_scrape_feedback" not in st.session_state:
@@ -373,6 +379,45 @@ def render_prophet_dashboard() -> None:
         st.markdown('<div class="panel">', unsafe_allow_html=True)
         st.markdown('<div class="panel-title">Operator Console</div>', unsafe_allow_html=True)
         st.caption("Use the AP News source banner above for discovery and scrape. Indexing remains a separate step.")
+        model_discovery = discover_ollama_models(base_url=st.session_state.ollama_host, timeout_seconds=2.5)
+        st.session_state.ollama_model_discovery = model_discovery
+        available_models = model_discovery.get("models", [])
+        embed_candidates = model_discovery.get("embedding_candidates", []) or available_models
+        answer_candidates = model_discovery.get("answer_candidates", []) or available_models
+
+        if available_models:
+            if st.session_state.selected_embedding_model not in embed_candidates:
+                st.session_state.selected_embedding_model = embed_candidates[0]
+            if st.session_state.selected_answer_model not in answer_candidates:
+                st.session_state.selected_answer_model = answer_candidates[0]
+        else:
+            st.session_state.selected_embedding_model = ""
+            st.session_state.selected_answer_model = ""
+
+        if model_discovery.get("available"):
+            st.markdown(
+                f'<div class="small">Ollama models discovered: <strong>{len(available_models)}</strong></div>',
+                unsafe_allow_html=True,
+            )
+        else:
+            st.markdown('<div class="small">Ollama unavailable: model dropdowns are disabled.</div>', unsafe_allow_html=True)
+
+        if model_discovery.get("available"):
+            st.selectbox(
+                "Embedding Model",
+                options=embed_candidates,
+                index=embed_candidates.index(st.session_state.selected_embedding_model),
+                key="selected_embedding_model",
+            )
+            st.selectbox(
+                "Answer Model",
+                options=answer_candidates,
+                index=answer_candidates.index(st.session_state.selected_answer_model),
+                key="selected_answer_model",
+            )
+        else:
+            st.selectbox("Embedding Model", options=["No models available"], index=0, disabled=True)
+            st.selectbox("Answer Model", options=["No models available"], index=0, disabled=True)
         index_clicked = st.button("Index Data", use_container_width=True)
         clear_clicked = st.button("Reset Results", use_container_width=True)
 
@@ -431,7 +476,11 @@ def render_prophet_dashboard() -> None:
                     )
 
             with st.spinner("Indexing saved local corpus from /data ..."):
-                st.session_state.index_data_feedback = ingest_new_articles(progress_callback=_on_progress)
+                st.session_state.index_data_feedback = ingest_new_articles(
+                    progress_callback=_on_progress,
+                    embedding_model=st.session_state.selected_embedding_model,
+                    answer_model=st.session_state.selected_answer_model,
+                )
 
         index_feedback = st.session_state.index_data_feedback
         if index_feedback:
@@ -450,7 +499,9 @@ def render_prophet_dashboard() -> None:
                         f"Inspected: <strong>{inspected}</strong> · "
                         f"Newly indexed articles: <strong>{new_articles}</strong> · "
                         f"Already indexed/skipped: <strong>{already_indexed}</strong> · "
-                        f"New chunks: <strong>{new_chunks}</strong></div>"
+                        f"New chunks: <strong>{new_chunks}</strong> · "
+                        f"Embedding model: <strong>{index_feedback.get('selected_embedding_model') or st.session_state.selected_embedding_model or 'N/A'}</strong> · "
+                        f"Answer model: <strong>{index_feedback.get('selected_answer_model') or st.session_state.selected_answer_model or 'N/A'}</strong></div>"
                     ),
                     unsafe_allow_html=True,
                 )
@@ -469,15 +520,28 @@ def render_prophet_dashboard() -> None:
 
         result = st.session_state.analysis_result
         index_status = get_indexing_status()
+        model_discovery = st.session_state.ollama_model_discovery or {}
         st.markdown(
             (
                 '<div class="small">Local runtime: Ollama + SQLite index · '
                 f"Processed articles: <strong>{index_status.get('processed_articles_total', 0)}</strong> · "
                 f"Indexed articles: <strong>{index_status.get('indexed_articles_total', 0)}</strong> · "
-                f"Up to date: <strong>{'Yes' if index_status.get('is_index_up_to_date') else 'No'}</strong></div>"
+                f"Up to date: <strong>{'Yes' if index_status.get('is_index_up_to_date') else 'No'}</strong> · "
+                f"Ollama available: <strong>{'Yes' if model_discovery.get('available') else 'No'}</strong></div>"
             ),
             unsafe_allow_html=True,
         )
+        st.markdown(
+            (
+                '<div class="small">Selected Embedding Model: '
+                f"<strong>{st.session_state.selected_embedding_model or 'None'}</strong> · "
+                'Selected Answer Model: '
+                f"<strong>{st.session_state.selected_answer_model or 'None'}</strong></div>"
+            ),
+            unsafe_allow_html=True,
+        )
+        if not model_discovery.get("available") and model_discovery.get("error"):
+            st.warning(model_discovery.get("error"))
         if ask_clicked:
             if not result or result.get("ok") == "false":
                 st.session_state.ask_prophet_error = "Run a scrape analysis first so Prophet has evidence to search."
@@ -491,6 +555,8 @@ def render_prophet_dashboard() -> None:
                 ask_result = run_ask_the_prophet(
                     question=ask_question,
                     article_corpus=result.get("article_corpus", []),
+                    embedding_model=st.session_state.selected_embedding_model,
+                    answer_model=st.session_state.selected_answer_model,
                 )
                 st.session_state.ask_prophet_error = ask_result.get("error", "")
                 st.session_state.ask_prophet_answer = ask_result.get("answer", "")
@@ -517,6 +583,13 @@ def render_prophet_dashboard() -> None:
                     f'<div class="small">Embedding API mode: <strong>{embedding_mode}</strong></div>',
                     unsafe_allow_html=True,
                 )
+            st.markdown(
+                (
+                    '<div class="small">Answer model used: '
+                    f"<strong>{st.session_state.selected_answer_model or 'N/A'}</strong></div>"
+                ),
+                unsafe_allow_html=True,
+            )
             if st.session_state.ask_prophet_indexing_triggered:
                 st.markdown(
                     '<div class="small">Pre-answer check: Missing corpus items were indexed before retrieval.</div>',
