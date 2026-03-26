@@ -1149,6 +1149,7 @@ with aj_col:
         ),
         unsafe_allow_html=True,
     )
+    st.markdown('<div class="source-card-buffer"></div>', unsafe_allow_html=True)
 
     aj_query_date_col, aj_query_button_col = st.columns([1.25, 1], gap="small")
     with aj_query_date_col:
@@ -1314,7 +1315,7 @@ with pbs_col:
             '<div class="source-card">'
             '<div style="font-size:1.35rem;">📺</div>'
             '<div class="source-card-label">PBS NewsHour</div>'
-            '<div class="source-card-url">Date-based sitemap discovery (English only)</div>'
+            '<div class="source-card-url">Date-based sitemap discovery</div>'
             "</div>"
         ),
         unsafe_allow_html=True,
@@ -1483,7 +1484,7 @@ with pp_col:
             '<div class="source-card">'
             '<div style="font-size:1.35rem;">🔎</div>'
             '<div class="source-card-label">ProPublica</div>'
-            '<div class="source-card-url">Date-based sitemap discovery (English only)</div>'
+            '<div class="source-card-url">Date-based sitemap discovery</div>'
             "</div>"
         ),
         unsafe_allow_html=True,
