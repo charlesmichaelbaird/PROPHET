@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
 import os
 from pathlib import Path
 from queue import Empty, Queue
@@ -511,9 +512,26 @@ def _count_locally_scraped_aj_articles() -> int:
     return sum(1 for _ in processed_root.glob("*/*/metadata.json"))
 
 
-def _indexed_count_for_source(index_status_payload: dict, source_partition: str) -> int:
+def _indexed_count_for_source(index_status_payload: dict, source_partitions: list[str]) -> int:
+    source_keys = [key.strip().lower() for key in source_partitions if key.strip()]
     source_counts = index_status_payload.get("indexed_counts_by_source", {}) or {}
-    return int(source_counts.get(source_partition, 0))
+    manifest_root = Path(str(index_status_payload.get("active_model_index_root", "")).strip())
+    manifest_count = 0
+    if manifest_root.exists():
+        for source_key in source_keys:
+            manifest_path = manifest_root / source_key / "vector_manifest.json"
+            if not manifest_path.exists():
+                continue
+            try:
+                payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            articles = payload.get("articles", payload.get("indexed_articles", {}))
+            if isinstance(articles, dict):
+                manifest_count += len(articles)
+    if manifest_count > 0:
+        return manifest_count
+    return sum(int(source_counts.get(source_key, 0) or 0) for source_key in source_keys)
 
 
 def _format_bbc_user_error(error_message: str) -> str:
@@ -539,7 +557,7 @@ hero_left, hero_middle, hero_right = st.columns([2.5, 1.8, 1.2], gap="medium")
 with hero_left:
     st.markdown('<p class="brand">PROPHET</p>', unsafe_allow_html=True)
     st.markdown(
-        '<p class="subtitle">Predictive Reasoning of Probabilistic Hypotheses and Event Tracking</p>',
+        '<p class="subtitle">Predictive Reasoning of Probable Hypotheses and Event Tracking</p>',
         unsafe_allow_html=True,
     )
     st.markdown(
@@ -705,7 +723,7 @@ with ap_col:
             placeholder="MM/DD/YYYY",
         )
     with ap_query_button_col:
-        query_clicked = st.button("Query Site Article Count", use_container_width=True, key="ap_query_btn")
+        query_clicked = st.button("Article Count", use_container_width=True, key="ap_query_btn")
 
     ap_scrape_active = bool(st.session_state.ap_scrape_active)
     ap_action_col_left, ap_action_col_right = st.columns(2, gap="small")
@@ -823,7 +841,7 @@ with ap_col:
 
     scraped_local_count = _count_locally_scraped_ap_articles()
     discovered_count = query_result.get("links_found", 0) if query_result else 0
-    ap_indexed_count = _indexed_count_for_source(index_status, AP_INDEX_PARTITION)
+    ap_indexed_count = _indexed_count_for_source(index_status, [AP_INDEX_PARTITION, AP_SOURCE_DIRNAME])
     st.markdown(
         (
             '<div class="small">AP corpus status · '
@@ -868,7 +886,7 @@ with bbc_col:
         )
     with bbc_query_button_col:
         bbc_query_clicked = st.button(
-            "Query Site Article Count",
+            "Article Count",
             key="bbc_query_site_article_count",
             use_container_width=True,
         )
@@ -995,7 +1013,7 @@ with bbc_col:
 
     bbc_scraped_local_count = _count_locally_scraped_bbc_articles()
     bbc_discovered_count = bbc_query_result.get("links_found", 0) if bbc_query_result else 0
-    bbc_indexed_count = _indexed_count_for_source(index_status, BBC_INDEX_PARTITION)
+    bbc_indexed_count = _indexed_count_for_source(index_status, [BBC_INDEX_PARTITION, BBC_SOURCE_DIRNAME, "bbc-com"])
     st.markdown(
         (
             '<div class="small">BBC corpus status · '
@@ -1040,7 +1058,7 @@ with aj_col:
         )
     with aj_query_button_col:
         aj_query_clicked = st.button(
-            "Query Site Article Count",
+            "Article Count",
             key="aj_query_site_article_count",
             use_container_width=True,
         )
@@ -1161,7 +1179,7 @@ with aj_col:
 
     aj_scraped_local_count = _count_locally_scraped_aj_articles()
     aj_discovered_count = aj_query_result.get("links_found", 0) if aj_query_result else 0
-    aj_indexed_count = _indexed_count_for_source(index_status, AJ_INDEX_PARTITION)
+    aj_indexed_count = _indexed_count_for_source(index_status, [AJ_INDEX_PARTITION, AJ_SOURCE_DIRNAME])
     st.markdown(
         (
             '<div class="small">Al Jazeera corpus status · '
