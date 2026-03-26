@@ -102,6 +102,52 @@ class TestDateScrapeBehavior(unittest.TestCase):
         self.assertFalse(persist_mock.called)
         self.assertTrue(any("filtered_non_english_propublica" in row for row in result.get("fetch_diagnostics", [])))
 
+    def test_pbs_scrape_skips_non_english_page(self) -> None:
+        def _fake_discover(source_name: str, query_date, max_links: int):  # type: ignore[no-untyped-def]
+            return ([{"url": "https://www.pbs.org/newshour/mundo/story", "title": "ES", "publication_date": "", "lastmod": ""}], [], "")
+
+        with (
+            patch("mcp_server.tools._discover_articles_by_date", side_effect=_fake_discover),
+            patch(
+                "mcp_server.tools.fetch_url",
+                return_value=(
+                    '<html lang="es"><head>'
+                    '<link rel="canonical" href="https://www.pbs.org/newshour/mundo/story"/>'
+                    "</head><body><p>Hola noticia.</p></body></html>"
+                ),
+            ),
+            patch("mcp_server.tools.persist_article_if_new") as persist_mock,
+            patch("mcp_server.tools.write_run_index", return_value="run-index.json"),
+        ):
+            result = scrape_source_articles_by_date(source_name="pbs", date_str="03/25/2026", max_articles=1)
+
+        self.assertEqual(result["articles_scraped"], 0)
+        self.assertFalse(persist_mock.called)
+        self.assertTrue(any("filtered_non_english_or_non_article_pbs" in row for row in result.get("fetch_diagnostics", [])))
+
+    def test_pbs_query_uses_rss_fallback_when_sitemaps_empty(self) -> None:
+        query_date = datetime.strptime("03/26/2026", "%m/%d/%Y")
+
+        with patch(
+            "mcp_server.tools.fetch_url",
+            side_effect=[
+                "<sitemapindex></sitemapindex>",
+                "<sitemapindex></sitemapindex>",
+                "<sitemapindex></sitemapindex>",
+                (
+                    "<rss><channel><item><title>Story</title>"
+                    "<link>https://www.pbs.org/newshour/politics/example-story</link>"
+                    "<pubDate>Thu, 26 Mar 2026 12:00:00 GMT</pubDate>"
+                    "</item></channel></rss>"
+                ),
+            ],
+        ):
+            links, diagnostics, source = _discover_articles_by_date("pbs", query_date, max_links=10)
+
+        self.assertEqual(len(links), 1)
+        self.assertIn("fallback_used:pbs_rss", "|".join(diagnostics))
+        self.assertIn("feeds/rss/headlines", source)
+
     def test_aljazeera_query_returns_zero_results_without_exception(self) -> None:
         with patch("mcp_server.tools._discover_articles_by_date", return_value=([], ["no_date_matches:sitemap"], "index.xml")):
             result = query_source_article_count_by_date(source_name="aljazeera", date_str="03/25/2026", max_links=10)

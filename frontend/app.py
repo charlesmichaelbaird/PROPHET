@@ -106,6 +106,7 @@ html, body, [data-testid="stAppViewContainer"], .stApp {
 }
 .source-card-label { font-weight: 800; font-size: 1.06rem; letter-spacing: 0.03rem; }
 .source-card-url { color: #acc6ee; font-size: 0.8rem; margin-top: 0.4rem; }
+.source-card-buffer { height: 0.5rem; }
 </style>
 """,
     unsafe_allow_html=True,
@@ -175,8 +176,12 @@ if "aj_scrape_feedback" not in st.session_state:
     st.session_state.aj_scrape_feedback = ""
 if "pp_query_result" not in st.session_state:
     st.session_state.pp_query_result = {}
+if "pbs_query_result" not in st.session_state:
+    st.session_state.pbs_query_result = {}
 if "propublica_scrape_feedback" not in st.session_state:
     st.session_state.propublica_scrape_feedback = ""
+if "pbs_scrape_feedback" not in st.session_state:
+    st.session_state.pbs_scrape_feedback = ""
 if "ap_selected_date" not in st.session_state:
     st.session_state.ap_selected_date = datetime.now(timezone.utc).strftime("%m/%d/%Y")
 if "bbc_selected_date" not in st.session_state:
@@ -185,6 +190,8 @@ if "aj_selected_date" not in st.session_state:
     st.session_state.aj_selected_date = datetime.now(timezone.utc).strftime("%m/%d/%Y")
 if "pp_selected_date" not in st.session_state:
     st.session_state.pp_selected_date = datetime.now(timezone.utc).strftime("%m/%d/%Y")
+if "pbs_selected_date" not in st.session_state:
+    st.session_state.pbs_selected_date = datetime.now(timezone.utc).strftime("%m/%d/%Y")
 if "ap_scrape_active" not in st.session_state:
     st.session_state.ap_scrape_active = False
 if "bbc_scrape_active" not in st.session_state:
@@ -193,6 +200,8 @@ if "aj_scrape_active" not in st.session_state:
     st.session_state.aj_scrape_active = False
 if "propublica_scrape_active" not in st.session_state:
     st.session_state.propublica_scrape_active = False
+if "pbs_scrape_active" not in st.session_state:
+    st.session_state.pbs_scrape_active = False
 if "ap_scrape_thread" not in st.session_state:
     st.session_state.ap_scrape_thread = None
 if "bbc_scrape_thread" not in st.session_state:
@@ -201,6 +210,8 @@ if "aj_scrape_thread" not in st.session_state:
     st.session_state.aj_scrape_thread = None
 if "propublica_scrape_thread" not in st.session_state:
     st.session_state.propublica_scrape_thread = None
+if "pbs_scrape_thread" not in st.session_state:
+    st.session_state.pbs_scrape_thread = None
 if "ap_scrape_queue" not in st.session_state:
     st.session_state.ap_scrape_queue = Queue()
 if "bbc_scrape_queue" not in st.session_state:
@@ -209,6 +220,8 @@ if "aj_scrape_queue" not in st.session_state:
     st.session_state.aj_scrape_queue = Queue()
 if "pp_scrape_queue" not in st.session_state:
     st.session_state.pp_scrape_queue = Queue()
+if "pbs_scrape_queue" not in st.session_state:
+    st.session_state.pbs_scrape_queue = Queue()
 if "ap_stop_requested" not in st.session_state:
     st.session_state.ap_stop_requested = False
 if "bbc_stop_requested" not in st.session_state:
@@ -217,6 +230,8 @@ if "aj_stop_requested" not in st.session_state:
     st.session_state.aj_stop_requested = False
 if "propublica_stop_requested" not in st.session_state:
     st.session_state.propublica_stop_requested = False
+if "pbs_stop_requested" not in st.session_state:
+    st.session_state.pbs_stop_requested = False
 if "ap_scrape_started_at" not in st.session_state:
     st.session_state.ap_scrape_started_at = 0.0
 if "bbc_scrape_started_at" not in st.session_state:
@@ -225,6 +240,8 @@ if "aj_scrape_started_at" not in st.session_state:
     st.session_state.aj_scrape_started_at = 0.0
 if "propublica_scrape_started_at" not in st.session_state:
     st.session_state.propublica_scrape_started_at = 0.0
+if "pbs_scrape_started_at" not in st.session_state:
+    st.session_state.pbs_scrape_started_at = 0.0
 if "ap_scrape_status" not in st.session_state:
     st.session_state.ap_scrape_status = "idle"
 if "bbc_scrape_status" not in st.session_state:
@@ -233,6 +250,8 @@ if "aj_scrape_status" not in st.session_state:
     st.session_state.aj_scrape_status = "idle"
 if "propublica_scrape_status" not in st.session_state:
     st.session_state.propublica_scrape_status = "idle"
+if "pbs_scrape_status" not in st.session_state:
+    st.session_state.pbs_scrape_status = "idle"
 if "ap_scrape_progress" not in st.session_state:
     st.session_state.ap_scrape_progress = {}
 if "bbc_scrape_progress" not in st.session_state:
@@ -241,6 +260,8 @@ if "aj_scrape_progress" not in st.session_state:
     st.session_state.aj_scrape_progress = {}
 if "propublica_scrape_progress" not in st.session_state:
     st.session_state.propublica_scrape_progress = {}
+if "pbs_scrape_progress" not in st.session_state:
+    st.session_state.pbs_scrape_progress = {}
 if "ap_last_elapsed_seconds" not in st.session_state:
     st.session_state.ap_last_elapsed_seconds = 0
 if "bbc_last_elapsed_seconds" not in st.session_state:
@@ -249,6 +270,8 @@ if "aj_last_elapsed_seconds" not in st.session_state:
     st.session_state.aj_last_elapsed_seconds = 0
 if "propublica_last_elapsed_seconds" not in st.session_state:
     st.session_state.propublica_last_elapsed_seconds = 0
+if "pbs_last_elapsed_seconds" not in st.session_state:
+    st.session_state.pbs_last_elapsed_seconds = 0
 if "ap_index_feedback" not in st.session_state:
     st.session_state.ap_index_feedback = {}
 if "bbc_index_feedback" not in st.session_state:
@@ -257,6 +280,8 @@ if "aj_index_feedback" not in st.session_state:
     st.session_state.aj_index_feedback = {}
 if "pp_index_feedback" not in st.session_state:
     st.session_state.pp_index_feedback = {}
+if "pbs_index_feedback" not in st.session_state:
+    st.session_state.pbs_index_feedback = {}
 if "last_live_refresh_at" not in st.session_state:
     st.session_state.last_live_refresh_at = 0.0
 
@@ -273,6 +298,9 @@ AJ_INDEX_PARTITION = "aljazeera-com"
 PP_SOURCE_DIRNAME = "propublica"
 PP_SCRAPE_FALLBACK_MAX_ARTICLES = 200
 PP_INDEX_PARTITION = "propublica"
+PBS_SOURCE_DIRNAME = "pbs-news"
+PBS_SCRAPE_FALLBACK_MAX_ARTICLES = 200
+PBS_INDEX_PARTITION = "pbs-news"
 
 
 def _start_date_scrape_worker(source_name: str, date_str: str, max_articles: int, queue_key: str) -> None:
@@ -565,6 +593,13 @@ def _count_locally_scraped_pp_articles() -> int:
     return sum(1 for _ in processed_root.glob("*/*/metadata.json"))
 
 
+def _count_locally_scraped_pbs_articles() -> int:
+    processed_root = REPO_ROOT / "data" / "processed" / PBS_SOURCE_DIRNAME
+    if not processed_root.exists():
+        return 0
+    return sum(1 for _ in processed_root.glob("*/*/metadata.json"))
+
+
 def _indexed_count_for_source(index_status_payload: dict, source_partitions: list[str]) -> int:
     source_keys = [key.strip().lower() for key in source_partitions if key.strip()]
     source_counts = index_status_payload.get("indexed_counts_by_source", {}) or {}
@@ -762,10 +797,10 @@ with hero_right:
 st.markdown("</section>", unsafe_allow_html=True)
 
 st.markdown('<section class="source-banner">', unsafe_allow_html=True)
-st.markdown('<div class="panel-title">Source Ingestion · AP News + BBC + Al Jazeera English + ProPublica</div>', unsafe_allow_html=True)
+st.markdown('<div class="panel-title">Source Ingestion · AP News + BBC + Al Jazeera English + PBS NewsHour + ProPublica</div>', unsafe_allow_html=True)
 banner_left, banner_middle, banner_right = st.columns([0.5, 3.2, 0.5], gap="large")
 with banner_middle:
-    ap_col, bbc_col, aj_col, pp_col = st.columns(4, gap="large")
+    ap_col, bbc_col, aj_col, pbs_col, pp_col = st.columns(5, gap="medium")
 
 with ap_col:
     st.markdown(
@@ -778,6 +813,7 @@ with ap_col:
         ),
         unsafe_allow_html=True,
     )
+    st.markdown('<div class="source-card-buffer"></div>', unsafe_allow_html=True)
 
     ap_query_date_col, ap_query_button_col = st.columns([1.25, 1], gap="small")
     with ap_query_date_col:
@@ -940,6 +976,7 @@ with bbc_col:
         ),
         unsafe_allow_html=True,
     )
+    st.markdown('<div class="source-card-buffer"></div>', unsafe_allow_html=True)
 
     bbc_query_date_col, bbc_query_button_col = st.columns([1.25, 1], gap="small")
     with bbc_query_date_col:
@@ -1267,6 +1304,175 @@ with aj_col:
                 '<div class="small">Al Jazeera index update · '
                 f"Indexed: <strong>{aj_indexed}</strong> / <strong>{aj_eligible}</strong> · "
                 f"Remaining: <strong>{max(aj_eligible - aj_indexed, 0)}</strong></div>"
+        ),
+        unsafe_allow_html=True,
+    )
+
+with pbs_col:
+    st.markdown(
+        (
+            '<div class="source-card">'
+            '<div style="font-size:1.35rem;">📺</div>'
+            '<div class="source-card-label">PBS NewsHour</div>'
+            '<div class="source-card-url">Date-based sitemap discovery (English only)</div>'
+            "</div>"
+        ),
+        unsafe_allow_html=True,
+    )
+    st.markdown('<div class="source-card-buffer"></div>', unsafe_allow_html=True)
+
+    pbs_query_date_col, pbs_query_button_col = st.columns([1.25, 1], gap="small")
+    with pbs_query_date_col:
+        st.text_input(
+            "Date (MM/DD/YYYY)",
+            key="pbs_selected_date",
+            label_visibility="collapsed",
+            placeholder="MM/DD/YYYY",
+        )
+    with pbs_query_button_col:
+        pbs_query_clicked = st.button("Article Count", key="pbs_query_site_article_count", use_container_width=True)
+
+    pbs_scrape_active = bool(st.session_state.pbs_scrape_active)
+    pbs_action_col_left, pbs_action_col_right = st.columns(2, gap="small")
+    with pbs_action_col_left:
+        pbs_scrape_clicked = st.button(
+            "Stop Scraping" if pbs_scrape_active else "Scrape Data",
+            key="pbs_data_scrape",
+            use_container_width=True,
+        )
+    with pbs_action_col_right:
+        pbs_index_clicked = st.button(
+            "Index Data",
+            key="pbs_index_data_btn",
+            use_container_width=True,
+            disabled=not model_discovery.get("available"),
+        )
+
+    if pbs_query_clicked:
+        st.session_state.pbs_scrape_status = "querying/discovering"
+        with st.spinner("Querying PBS NewsHour archive metadata for selected date..."):
+            st.session_state.pbs_query_result = run_article_count_query_by_date(
+                source_name="pbs",
+                date_str=st.session_state.pbs_selected_date,
+                max_links=250,
+            )
+
+    if pbs_scrape_clicked and not pbs_scrape_active:
+        latest_pbs_query = st.session_state.pbs_query_result if st.session_state.pbs_query_result.get("ok") == "true" else {}
+        requested_pbs_scrape_count = int(latest_pbs_query.get("links_found", 0)) or PBS_SCRAPE_FALLBACK_MAX_ARTICLES
+        st.session_state.pbs_scrape_feedback = "PBS NewsHour scrape active..."
+        _start_date_scrape_worker(
+            source_name="pbs",
+            date_str=st.session_state.pbs_selected_date,
+            max_articles=requested_pbs_scrape_count,
+            queue_key="pbs_scrape_queue",
+        )
+    elif pbs_scrape_clicked and pbs_scrape_active:
+        run_stop_pipeline_by_date(source_name="pbs")
+        st.session_state.pbs_stop_requested = True
+        st.session_state.pbs_scrape_status = "stopped"
+        st.session_state.pbs_scrape_feedback = "Stopping PBS NewsHour scrape..."
+
+    if pbs_index_clicked:
+        st.session_state.pbs_index_feedback = _run_source_indexing(
+            source_partition=PBS_INDEX_PARTITION,
+            source_label="PBS NewsHour",
+        )
+
+    pbs_result = _poll_date_scrape_result("pbs", "pbs_scrape_queue")
+    if pbs_result is not None:
+        st.session_state.analysis_result = pbs_result
+        st.session_state.pbs_scrape_active = False
+        st.session_state.pbs_scrape_thread = None
+        if st.session_state.pbs_scrape_started_at:
+            st.session_state.pbs_last_elapsed_seconds = int(time.time() - st.session_state.pbs_scrape_started_at)
+        st.session_state.pbs_scrape_started_at = 0.0
+        pbs_ok = pbs_result.get("ok") == "true"
+        if pbs_ok:
+            pbs_scraped = pbs_result.get("articles_scraped", 0)
+            pbs_attempted = pbs_result.get("articles_attempted", 0)
+            if pbs_result.get("scrape_stopped_by_user"):
+                st.session_state.pbs_scrape_status = "stopped"
+                st.session_state.pbs_scrape_feedback = (
+                    "Scrape stopped by user. "
+                    f"Attempted: {pbs_attempted} · Scraped: {pbs_scraped} · Elapsed: {_format_elapsed(st.session_state.pbs_last_elapsed_seconds)}."
+                )
+            else:
+                st.session_state.pbs_scrape_status = "completed"
+                st.session_state.pbs_scrape_feedback = (
+                    "PBS NewsHour scrape complete. "
+                    f"Attempted: {pbs_attempted} · Scraped: {pbs_scraped} · Elapsed: {_format_elapsed(st.session_state.pbs_last_elapsed_seconds)}."
+                )
+        else:
+            st.session_state.pbs_scrape_status = "idle"
+            st.session_state.pbs_scrape_feedback = pbs_result.get("error", "PBS NewsHour scrape failed.")
+
+    pbs_query_result = st.session_state.pbs_query_result
+    if pbs_query_result:
+        if pbs_query_result.get("ok") == "true":
+            pbs_links_found = int(pbs_query_result.get("links_found", 0))
+            if pbs_links_found > 0:
+                st.markdown(
+                    (
+                        '<div class="small">Discovery complete · Candidate PBS NewsHour links: '
+                        f"<strong>{pbs_links_found}</strong></div>"
+                    ),
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.info(pbs_query_result.get("status_message", "No PBS NewsHour results for selected date."))
+            pbs_preview = pbs_query_result.get("preview", [])
+            if pbs_preview:
+                st.markdown('<div class="small">Preview:</div>', unsafe_allow_html=True)
+                for item in pbs_preview[:5]:
+                    st.markdown(f"- [{item.get('title', item.get('url', ''))}]({item.get('url', '')})")
+        else:
+            st.warning(pbs_query_result.get("error", "PBS NewsHour count query failed."))
+
+    st.markdown(
+        f'<div class="small">Scrape status: <strong>{st.session_state.pbs_scrape_status}</strong></div>',
+        unsafe_allow_html=True,
+    )
+    if st.session_state.pbs_scrape_active:
+        _render_scrape_loading_bar("pbs")
+    if st.session_state.pbs_scrape_feedback:
+        st.markdown(f'<div class="small">{st.session_state.pbs_scrape_feedback}</div>', unsafe_allow_html=True)
+    elif pbs_query_result and pbs_query_result.get("ok") == "true":
+        st.markdown(
+            (
+                '<div class="small">Scrape Data will target the latest discovered count: '
+                f"<strong>{pbs_query_result.get('links_found', 0)}</strong> candidate links.</div>"
+            ),
+            unsafe_allow_html=True,
+        )
+    st.markdown(
+        f'<div class="small">Selected date: <strong>{st.session_state.pbs_selected_date}</strong></div>',
+        unsafe_allow_html=True,
+    )
+
+    pbs_scraped_local_count = _count_locally_scraped_pbs_articles()
+    pbs_discovered_count = pbs_query_result.get("links_found", 0) if pbs_query_result else 0
+    pbs_indexed_count = _indexed_count_for_source(index_status, [PBS_INDEX_PARTITION, PBS_SOURCE_DIRNAME, "pbs-org"])
+    st.markdown(
+        (
+            '<div class="small">PBS NewsHour corpus status · '
+            f"Discovered (latest query): <strong>{pbs_discovered_count}</strong> · "
+            f"Scraped locally: <strong>{pbs_scraped_local_count}</strong> · "
+            f"Indexed: <strong>{pbs_indexed_count}</strong></div>"
+        ),
+        unsafe_allow_html=True,
+    )
+    pbs_index_feedback = st.session_state.pbs_index_feedback
+    if pbs_index_feedback:
+        pbs_eligible = int(
+            pbs_index_feedback.get("eligible_for_indexing", pbs_index_feedback.get("new_articles_indexed", 0))
+        )
+        pbs_indexed = int(pbs_index_feedback.get("new_articles_indexed", 0))
+        st.markdown(
+            (
+                '<div class="small">PBS NewsHour index update · '
+                f"Indexed: <strong>{pbs_indexed}</strong> / <strong>{pbs_eligible}</strong> · "
+                f"Remaining: <strong>{max(pbs_eligible - pbs_indexed, 0)}</strong></div>"
             ),
             unsafe_allow_html=True,
         )
@@ -1282,6 +1488,7 @@ with pp_col:
         ),
         unsafe_allow_html=True,
     )
+    st.markdown('<div class="source-card-buffer"></div>', unsafe_allow_html=True)
 
     pp_query_date_col, pp_query_button_col = st.columns([1.25, 1], gap="small")
     with pp_query_date_col:
@@ -1446,6 +1653,7 @@ if (
     st.session_state.ap_scrape_active
     or st.session_state.bbc_scrape_active
     or st.session_state.aj_scrape_active
+    or st.session_state.pbs_scrape_active
     or st.session_state.propublica_scrape_active
 ):
     now_ts = time.time()

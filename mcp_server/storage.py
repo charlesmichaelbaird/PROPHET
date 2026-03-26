@@ -16,6 +16,8 @@ SOURCE_NAME_OVERRIDES = {
     "apnews.com": "apnews-com",
     "www.bbc.com": "www-bbc-com",
     "www.aljazeera.com": "www-aljazeera-com",
+    "www.pbs.org": "pbs-news",
+    "pbs.org": "pbs-news",
     "www.propublica.org": "propublica",
     "propublica.org": "propublica",
 }
