@@ -20,7 +20,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from mcp_server.server import run_ask_the_prophet, run_pipeline
+from mcp_server.server import run_ask_the_prophet, run_index_data, run_pipeline
 from mcp_server.rag import get_indexing_status
 from frontend.btc_data import fetch_btc_history, fetch_spot_btc_price
 
@@ -105,6 +105,8 @@ if "ask_prophet_index_verification" not in st.session_state:
     st.session_state.ask_prophet_index_verification = {}
 if "ask_prophet_embedding_mode" not in st.session_state:
     st.session_state.ask_prophet_embedding_mode = ""
+if "index_data_feedback" not in st.session_state:
+    st.session_state.index_data_feedback = {}
 if "ollama_process" not in st.session_state:
     st.session_state.ollama_process = None
 if "ollama_managed_by_ui" not in st.session_state:
@@ -262,7 +264,8 @@ def render_prophet_dashboard() -> None:
         keyword_filter_enabled = st.checkbox("Enable keyword filtering", value=False)
         keyword = st.text_input("Keyword (article-level match)", value="")
 
-        run_clicked = st.button("Run Zero-Cost Analysis", use_container_width=True)
+        run_clicked = st.button("Data Scrape", use_container_width=True)
+        index_clicked = st.button("Index Data", use_container_width=True)
         clear_clicked = st.button("Reset Results", use_container_width=True)
 
         if clear_clicked:
@@ -276,6 +279,29 @@ def render_prophet_dashboard() -> None:
                     keyword=keyword.strip(),
                     keyword_filter_enabled=keyword_filter_enabled,
                 )
+        if index_clicked:
+            with st.spinner("Indexing saved local corpus from /data ..."):
+                st.session_state.index_data_feedback = run_index_data()
+
+        index_feedback = st.session_state.index_data_feedback
+        if index_feedback:
+            if index_feedback.get("ok") == "true":
+                inspected = index_feedback.get("inspected_articles", 0)
+                new_articles = index_feedback.get("new_articles_indexed", 0)
+                already_indexed = index_feedback.get("already_indexed_articles", 0)
+                new_chunks = index_feedback.get("new_chunks_indexed", 0)
+                st.markdown(
+                    (
+                        '<div class="small">Index run complete · '
+                        f"Inspected: <strong>{inspected}</strong> · "
+                        f"Newly indexed articles: <strong>{new_articles}</strong> · "
+                        f"Already indexed/skipped: <strong>{already_indexed}</strong> · "
+                        f"New chunks: <strong>{new_chunks}</strong></div>"
+                    ),
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.warning(index_feedback.get("error", "Indexing failed."))
 
         st.markdown('</div>', unsafe_allow_html=True)
 

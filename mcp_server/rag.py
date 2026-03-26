@@ -496,13 +496,21 @@ def answer_question(
     indexing_triggered = False
     indexing_result: dict[str, Any] = {}
     if verification["missing_articles_total"] > 0:
-        indexing_triggered = True
-        indexing_result = index_missing_articles(
-            missing_content_hashes=verification["missing_content_hashes"],
-            client=client,
-            index=index,
-        )
-        verification = get_indexing_status(index=index)
+        return {
+            "ok": "true",
+            "error": "",
+            "answer": (
+                "Your local corpus has unindexed scraped articles. "
+                "Click 'Index Data' to index saved articles, then ask again."
+            ),
+            "citations": [],
+            "engine": "ollama-rag",
+            "retrieval_count": 0,
+            "index_verification": verification,
+            "indexing_triggered": False,
+            "indexing_result": {},
+            "embedding_mode": client.embedding_mode,
+        }
 
     query_vector = client.embed(cleaned_question)
     retrieved = index.similarity_search(query_vector, top_k=top_k)

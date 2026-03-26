@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from mcp_server.rag import ingest_new_articles
 from mcp_server.tools import analyze_homepage, ask_the_prophet
 
 
@@ -82,8 +83,34 @@ def run_ask_the_prophet(question: str, article_corpus: list[dict[str, str]]) -> 
         }
 
 
+def run_index_data() -> dict:
+    """Run explicit index-only pass over locally saved corpus."""
+    try:
+        indexing = ingest_new_articles()
+        inspected = int(indexing.get("processed_articles_total", 0))
+        new_articles = int(indexing.get("new_articles_indexed", 0))
+        already_indexed = max(inspected - new_articles, 0)
+        return {
+            "ok": "true",
+            "error": "",
+            **indexing,
+            "inspected_articles": inspected,
+            "already_indexed_articles": already_indexed,
+        }
+    except Exception as exc:
+        return {
+            "ok": "false",
+            "error": f"Indexing failed: {exc}",
+            "inspected_articles": 0,
+            "already_indexed_articles": 0,
+            "new_articles_indexed": 0,
+            "new_chunks_indexed": 0,
+        }
+
+
 TOOLS = {
     "analyze_homepage": analyze_homepage,
     "run_pipeline": run_pipeline,
     "run_ask_the_prophet": run_ask_the_prophet,
+    "run_index_data": run_index_data,
 }

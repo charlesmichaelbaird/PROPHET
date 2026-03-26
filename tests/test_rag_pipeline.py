@@ -11,6 +11,7 @@ import requests
 from mcp_server.rag import (
     LocalVectorIndex,
     OllamaClient,
+    answer_question,
     chunk_text,
     get_indexing_status,
     index_missing_articles,
@@ -167,6 +168,20 @@ class TestRagPipeline(unittest.TestCase):
             )
             self.assertEqual(indexed["new_articles_indexed"], 1)
             self.assertTrue(indexed["is_index_up_to_date"])
+
+    def test_answer_requires_explicit_index_run_when_corpus_not_indexed(self) -> None:
+        with patch("mcp_server.rag.get_indexing_status") as mock_status:
+            mock_status.return_value = {
+                "processed_articles_total": 4,
+                "indexed_articles_total": 0,
+                "missing_articles_total": 4,
+                "is_index_up_to_date": False,
+                "missing_content_hashes": ["a", "b", "c", "d"],
+            }
+            result = answer_question("What happened?", client=_FakeEmbedClient(), index=LocalVectorIndex(Path(':memory:')))
+
+        self.assertIn("Click 'Index Data'", result["answer"])
+        self.assertEqual(result["indexing_triggered"], False)
 
 
 if __name__ == "__main__":
