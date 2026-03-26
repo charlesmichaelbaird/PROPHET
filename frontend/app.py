@@ -281,6 +281,22 @@ def render_prophet_dashboard() -> None:
         ask_clicked = st.button("Ask The Prophet", use_container_width=True)
 
         result = st.session_state.analysis_result
+        rag_stats = result.get("rag_ingestion", {}) if isinstance(result, dict) else {}
+        if rag_stats:
+            if rag_stats.get("error"):
+                st.markdown(
+                    f'<div class="small">Local RAG status: {rag_stats.get("error")}</div>',
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.markdown(
+                    (
+                        '<div class="small">Local runtime: Ollama + SQLite index · '
+                        f"Articles indexed: <strong>{rag_stats.get('total_articles_indexed', 0)}</strong> · "
+                        f"Chunks indexed: <strong>{rag_stats.get('total_chunks_indexed', 0)}</strong></div>"
+                    ),
+                    unsafe_allow_html=True,
+                )
         if ask_clicked:
             if not result or result.get("ok") == "false":
                 st.session_state.ask_prophet_error = "Run a scrape analysis first so Prophet has evidence to search."
@@ -305,8 +321,8 @@ def render_prophet_dashboard() -> None:
             engine = st.session_state.ask_prophet_engine
             if engine == "fallback":
                 st.markdown('<div class="small">Engine: Extractive fallback (no local model runtime detected)</div>', unsafe_allow_html=True)
-            elif engine == "ollama":
-                st.markdown('<div class="small">Engine: Local Ollama model</div>', unsafe_allow_html=True)
+            elif engine in {"ollama", "ollama-rag"}:
+                st.markdown('<div class="small">Engine: Local Ollama + persistent local retrieval index</div>', unsafe_allow_html=True)
             st.markdown(st.session_state.ask_prophet_answer)
         else:
             st.markdown('<div class="small">Answer will appear here after you ask a question.</div>', unsafe_allow_html=True)
