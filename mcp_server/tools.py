@@ -268,6 +268,49 @@ class DocumentLangParser(HTMLParser):
                 break
 
 
+def _extract_iso_date_candidates(article_html: str) -> list[str]:
+    candidates: list[str] = []
+    patterns = (
+        r'<meta[^>]+property=["\']article:published_time["\'][^>]+content=["\']([^"\']+)["\']',
+        r'<meta[^>]+name=["\']pubdate["\'][^>]+content=["\']([^"\']+)["\']',
+        r'<meta[^>]+name=["\']publishdate["\'][^>]+content=["\']([^"\']+)["\']',
+        r'<meta[^>]+itemprop=["\']datePublished["\'][^>]+content=["\']([^"\']+)["\']',
+        r'<time[^>]+datetime=["\']([^"\']+)["\']',
+    )
+    for pattern in patterns:
+        for match in re.findall(pattern, article_html, flags=re.IGNORECASE):
+            candidate = str(match).strip()
+            if candidate and candidate not in candidates:
+                candidates.append(candidate)
+    return candidates
+
+
+def _normalize_iso_datetime(value: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    normalized = raw.replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        try:
+            parsed = datetime.strptime(raw[:10], "%Y-%m-%d")
+        except ValueError:
+            return ""
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).isoformat()
+
+
+def _extract_published_datetime(article_html: str) -> str:
+    for candidate in _extract_iso_date_candidates(article_html):
+        normalized = _normalize_iso_datetime(candidate)
+        if normalized:
+            return normalized
+    return ""
+
+
 def _is_browser_header_host(url: str) -> bool:
     host = urlparse(url).netloc.lower()
     return "reuters.com" in host or "bbc.com" in host
@@ -527,7 +570,14 @@ def _discover_articles_by_date(
                 if not _entry_matches_date(entry, query_date):
                     continue
                 seen.add(url)
-                discovered.append({"url": url, "title": entry.get("title", "") or url})
+                discovered.append(
+                    {
+                        "url": url,
+                        "title": entry.get("title", "") or url,
+                        "publication_date": entry.get("publication_date", ""),
+                        "lastmod": entry.get("lastmod", ""),
+                    }
+                )
                 matched += 1
                 if len(discovered) >= max_links:
                     diagnostics.append(f"matched_limit_reached:{sitemap_url}")
@@ -835,15 +885,24 @@ def analyze_homepage(
                 }
             )
             scraped_articles.append(preview_entry)
+            homepage_published = _extract_published_datetime(article_html)
+            homepage_published_source = "page_metadata" if homepage_published else "scrape_timestamp_fallback"
+            diagnostics.append(f"storage_date_source:{homepage_published_source}:{link['url']}")
             persist_result = persist_article_if_new(
                 homepage_url=homepage_url,
                 source_homepage_url=homepage_url,
                 article_url=link["url"],
                 title=preview_entry["title"],
                 scrape_timestamp=datetime.now(timezone.utc),
+                published_at=homepage_published,
+                published_date_source=homepage_published_source,
                 clean_text=article_text,
                 article_html=article_html,
-                article_metadata=preview_entry,
+                article_metadata={
+                    **preview_entry,
+                    "published_date": homepage_published,
+                    "published_date_source": homepage_published_source,
+                },
             )
             manifest_path = persist_result.get("manifest_path", manifest_path)
             if persist_result.get("status") == "saved":
@@ -1139,15 +1198,48 @@ def scrape_source_articles_by_date(
             preview_entry = {"url": link["url"], "title": page_title, "word_count": len(tokens)}
             scraped_articles.append(preview_entry)
 
+            page_published = _extract_published_datetime(article_html)
+            published_candidates = (
+                link.get("publication_date", ""),
+                link.get("lastmod", ""),
+                page_published,
+                query_date.strftime("%Y-%m-%d"),
+            )
+            published_at = ""
+            published_source = ""
+            for candidate in published_candidates:
+                normalized = _normalize_iso_datetime(candidate)
+                if normalized:
+                    published_at = normalized
+                    if candidate == link.get("publication_date", ""):
+                        published_source = "sitemap_publication_date"
+                    elif candidate == link.get("lastmod", ""):
+                        published_source = "sitemap_lastmod"
+                    elif candidate == page_published:
+                        published_source = "page_metadata"
+                    else:
+                        published_source = "query_date_fallback"
+                    break
+            if not published_at:
+                published_at = datetime.now(timezone.utc).isoformat()
+                published_source = "scrape_timestamp_fallback"
+            diagnostics.append(f"storage_date_source:{published_source}:{link['url']}")
+
             persist_result = persist_article_if_new(
                 homepage_url=source_home,
                 source_homepage_url=source_home,
                 article_url=link["url"],
                 title=preview_entry["title"],
                 scrape_timestamp=datetime.now(timezone.utc),
+                published_at=published_at,
+                published_date_source=published_source,
                 clean_text=article_text,
                 article_html=article_html,
-                article_metadata=preview_entry,
+                article_metadata={
+                    **preview_entry,
+                    "published_date": published_at,
+                    "published_date_source": published_source,
+                },
             )
             manifest_path = persist_result.get("manifest_path", manifest_path)
             if persist_result.get("status") == "saved":

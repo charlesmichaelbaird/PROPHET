@@ -355,11 +355,29 @@ with hero_middle:
     if not model_discovery.get("available"):
         st.markdown('<div class="small">Indexing requires local Ollama runtime.</div>', unsafe_allow_html=True)
     if index_clicked:
+        progress_slot = st.empty()
+        progress_bar = progress_slot.progress(0)
+        progress_label = st.empty()
+
+        def _index_progress(event: dict) -> None:
+            total = max(int(event.get("total_to_index", event.get("eligible_for_indexing", 0)) or 0), 0)
+            position = max(int(event.get("article_position", 0) or 0), 0)
+            if event.get("event") == "article_done":
+                position = max(int(event.get("indexed_so_far", position) or position), position)
+            percent = int((position / total) * 100) if total > 0 else 5
+            progress_bar.progress(min(max(percent, 0), 100))
+            progress_label.markdown(
+                f'<div class="small">Indexing progress: <strong>{position}</strong> / <strong>{total}</strong></div>',
+                unsafe_allow_html=True,
+            )
+
         with st.spinner("Indexing saved local corpus from /data ..."):
             st.session_state.index_data_feedback = ingest_new_articles(
                 embedding_model=st.session_state.selected_embedding_model,
                 answer_model=st.session_state.selected_answer_model,
+                progress_callback=_index_progress,
             )
+        progress_bar.progress(100)
 
     index_feedback = st.session_state.index_data_feedback
     if index_feedback:
