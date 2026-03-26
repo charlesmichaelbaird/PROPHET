@@ -53,21 +53,58 @@ class OllamaClient:
         self.timeout_seconds = timeout_seconds
 
     def embed(self, text: str) -> list[float]:
-        payload = {"model": self.embed_model, "input": text}
+        candidate_models = self._candidate_embedding_models()
+        last_error: Exception | None = None
+
+        for model_name in candidate_models:
+            try:
+                return self._embed_with_model(text=text, model_name=model_name)
+            except Exception as exc:  # noqa: BLE001 - preserve best-effort fallback behavior
+                last_error = exc
+                continue
+
+        detail = str(last_error) if last_error else "unknown embedding failure"
+        raise RuntimeError(
+            "Failed to compute embeddings with available Ollama models. "
+            f"Tried: {', '.join(candidate_models)}. Detail: {detail}"
+        )
+
+    def _candidate_embedding_models(self) -> list[str]:
+        configured = [self.embed_model, self.chat_model, "nomic-embed-text", "mxbai-embed-large"]
+        deduped: list[str] = []
+        for name in configured:
+            clean = str(name).strip()
+            if clean and clean not in deduped:
+                deduped.append(clean)
+        return deduped
+
+    def _embed_with_model(self, text: str, model_name: str) -> list[float]:
         # Newer Ollama endpoint
-        response = requests.post(f"{self.base_url}/api/embed", json=payload, timeout=self.timeout_seconds)
-        if response.status_code == 404:
-            # Backward compatible fallback
-            legacy_payload = {"model": self.embed_model, "prompt": text}
-            legacy = requests.post(f"{self.base_url}/api/embeddings", json=legacy_payload, timeout=self.timeout_seconds)
-            legacy.raise_for_status()
+        response = requests.post(
+            f"{self.base_url}/api/embed",
+            json={"model": model_name, "input": [text]},
+            timeout=self.timeout_seconds,
+        )
+        if response.status_code == 200:
+            body = response.json()
+            embeddings = body.get("embeddings", [])
+            if embeddings:
+                return [float(x) for x in embeddings[0]]
+
+        # Backward-compatible endpoint
+        legacy = requests.post(
+            f"{self.base_url}/api/embeddings",
+            json={"model": model_name, "prompt": text},
+            timeout=self.timeout_seconds,
+        )
+        if legacy.status_code == 200:
             return [float(x) for x in legacy.json().get("embedding", [])]
-        response.raise_for_status()
-        body = response.json()
-        embeddings = body.get("embeddings", [])
-        if not embeddings:
-            return []
-        return [float(x) for x in embeddings[0]]
+
+        # surface best available detail for debugging/config
+        if response.status_code >= 400:
+            response.raise_for_status()
+        legacy.raise_for_status()
+        return []
 
     def chat(self, question: str, chunks: list[RetrievalChunk]) -> str:
         context_lines: list[str] = []

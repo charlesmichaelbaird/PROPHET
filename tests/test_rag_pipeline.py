@@ -4,8 +4,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import Mock, patch
 
-from mcp_server.rag import LocalVectorIndex, chunk_text, ingest_new_articles
+from mcp_server.rag import LocalVectorIndex, OllamaClient, chunk_text, ingest_new_articles
 from mcp_server.storage import persist_article_if_new
 
 
@@ -62,6 +63,25 @@ class TestRagPipeline(unittest.TestCase):
             )
             self.assertEqual(second["new_articles_indexed"], 0)
             self.assertEqual(second["new_chunks_indexed"], 0)
+
+    def test_embed_falls_back_to_next_model_when_first_missing(self) -> None:
+        client = OllamaClient(base_url="http://localhost:11434", embed_model="missing-model", chat_model="llama3.1")
+
+        missing_model_response = Mock(status_code=404)
+        missing_model_response.raise_for_status.side_effect = RuntimeError("model missing")
+
+        good_response = Mock(status_code=200)
+        good_response.json.return_value = {"embeddings": [[0.1, 0.2, 0.3]]}
+
+        with patch("mcp_server.rag.requests.post") as mock_post:
+            mock_post.side_effect = [
+                missing_model_response,  # /api/embed missing-model
+                missing_model_response,  # /api/embeddings missing-model
+                good_response,  # /api/embed llama3.1
+            ]
+            vector = client.embed("test text")
+
+        self.assertEqual(vector, [0.1, 0.2, 0.3])
 
 
 if __name__ == "__main__":
