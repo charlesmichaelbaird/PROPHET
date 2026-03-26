@@ -20,7 +20,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from mcp_server.server import run_ask_the_prophet, run_pipeline
+from mcp_server.server import run_article_count_query, run_ask_the_prophet, run_pipeline
 from mcp_server.rag import get_indexing_status, ingest_new_articles
 from frontend.btc_data import fetch_btc_history, fetch_spot_btc_price
 
@@ -82,6 +82,17 @@ html, body, [data-testid="stAppViewContainer"], .stApp {
 [aria-selected="true"][data-baseweb="tab"] {
   background: linear-gradient(130deg, #14305a, #205985);
 }
+.source-banner {
+  border: 1px solid rgba(111, 160, 255, 0.26); border-radius: 16px; padding: 0.85rem 1rem;
+  background: rgba(12, 20, 36, 0.86); margin: 0 auto 1rem auto; max-width: 980px;
+}
+.source-card {
+  border: 1px solid rgba(136, 182, 255, 0.38); border-radius: 14px; padding: 0.85rem;
+  background: linear-gradient(130deg, rgba(20, 40, 72, 0.95), rgba(19, 66, 112, 0.78));
+  text-align: center; min-height: 124px;
+}
+.source-card-label { font-weight: 800; font-size: 1.06rem; letter-spacing: 0.03rem; }
+.source-card-url { color: #acc6ee; font-size: 0.8rem; margin-top: 0.4rem; }
 </style>
 """,
     unsafe_allow_html=True,
@@ -117,6 +128,15 @@ if "ollama_last_error" not in st.session_state:
     st.session_state.ollama_last_error = ""
 if "ollama_host" not in st.session_state:
     st.session_state.ollama_host = os.getenv("PROPHET_OLLAMA_HOST", "http://localhost:11434")
+if "ap_query_result" not in st.session_state:
+    st.session_state.ap_query_result = {}
+if "ap_scrape_feedback" not in st.session_state:
+    st.session_state.ap_scrape_feedback = ""
+
+
+AP_NEWS_URL = "https://apnews.com/"
+AP_SOURCE_DIRNAME = "apnews-com"
+AP_SCRAPE_FALLBACK_MAX_ARTICLES = 200
 
 
 def _is_ollama_api_alive(host: str) -> bool:
@@ -191,6 +211,14 @@ def render_meta_chips() -> None:
         unsafe_allow_html=True,
     )
 
+
+def _count_locally_scraped_ap_articles() -> int:
+    processed_root = REPO_ROOT / "data" / "processed" / AP_SOURCE_DIRNAME
+    if not processed_root.exists():
+        return 0
+    return sum(1 for _ in processed_root.glob("*/*/metadata.json"))
+
+
 st.markdown('<section class="hero">', unsafe_allow_html=True)
 hero_left, hero_right = st.columns([3.4, 1.2], gap="medium")
 with hero_left:
@@ -244,6 +272,93 @@ with hero_right:
     st.markdown('</div>', unsafe_allow_html=True)
 st.markdown("</section>", unsafe_allow_html=True)
 
+st.markdown('<section class="source-banner">', unsafe_allow_html=True)
+st.markdown('<div class="panel-title">Source Ingestion · AP News</div>', unsafe_allow_html=True)
+banner_left, banner_middle, banner_right = st.columns([1.2, 1.6, 1.2], gap="large")
+with banner_middle:
+    st.markdown(
+        (
+            '<div class="source-card">'
+            '<div style="font-size:1.35rem;">📰</div>'
+            '<div class="source-card-label">AP News</div>'
+            '<div class="source-card-url">https://apnews.com/</div>'
+            "</div>"
+        ),
+        unsafe_allow_html=True,
+    )
+
+    query_clicked = st.button("Query Site Article Count", use_container_width=True)
+    scrape_clicked = st.button("Data Scrape", use_container_width=True)
+
+    if query_clicked:
+        with st.spinner("Querying AP News homepage links..."):
+            st.session_state.ap_query_result = run_article_count_query(
+                homepage_url=AP_NEWS_URL,
+                max_links=220,
+            )
+
+    if scrape_clicked:
+        latest_query = st.session_state.ap_query_result if st.session_state.ap_query_result.get("ok") == "true" else {}
+        requested_scrape_count = int(latest_query.get("links_found", 0)) or AP_SCRAPE_FALLBACK_MAX_ARTICLES
+        with st.spinner("Running AP News data scrape..."):
+            st.session_state.analysis_result = run_pipeline(
+                AP_NEWS_URL,
+                requested_scrape_count,
+                keyword="",
+                keyword_filter_enabled=False,
+            )
+        result_ok = st.session_state.analysis_result.get("ok") == "true"
+        if result_ok:
+            scraped = st.session_state.analysis_result.get("articles_scraped", 0)
+            attempted = st.session_state.analysis_result.get("articles_attempted", 0)
+            st.session_state.ap_scrape_feedback = (
+                "AP News scrape complete. "
+                f"Requested: {requested_scrape_count} · Attempted: {attempted} · Scraped: {scraped}."
+            )
+        else:
+            st.session_state.ap_scrape_feedback = st.session_state.analysis_result.get("error", "AP News scrape failed.")
+
+    query_result = st.session_state.ap_query_result
+    if query_result:
+        if query_result.get("ok") == "true":
+            st.markdown(
+                (
+                    '<div class="small">Discovery complete · Candidate AP article links: '
+                    f"<strong>{query_result.get('links_found', 0)}</strong></div>"
+                ),
+                unsafe_allow_html=True,
+            )
+            preview = query_result.get("preview", [])
+            if preview:
+                st.markdown('<div class="small">Preview:</div>', unsafe_allow_html=True)
+                for item in preview[:5]:
+                    st.markdown(f"- [{item.get('title', item.get('url', ''))}]({item.get('url', '')})")
+        else:
+            st.warning(query_result.get("error", "AP News count query failed."))
+
+    if st.session_state.ap_scrape_feedback:
+        st.markdown(f'<div class="small">{st.session_state.ap_scrape_feedback}</div>', unsafe_allow_html=True)
+    elif query_result and query_result.get("ok") == "true":
+        st.markdown(
+            (
+                '<div class="small">Data Scrape will target the latest discovered count: '
+                f"<strong>{query_result.get('links_found', 0)}</strong> candidate links.</div>"
+            ),
+            unsafe_allow_html=True,
+        )
+
+    scraped_local_count = _count_locally_scraped_ap_articles()
+    discovered_count = query_result.get("links_found", 0) if query_result else 0
+    st.markdown(
+        (
+            '<div class="small">AP corpus status · '
+            f"Discovered (latest query): <strong>{discovered_count}</strong> · "
+            f"Scraped locally: <strong>{scraped_local_count}</strong></div>"
+        ),
+        unsafe_allow_html=True,
+    )
+st.markdown("</section>", unsafe_allow_html=True)
+
 view = st.radio(
     "Dashboard View",
     ["PROPHET Dashboard", "BTC/USD Monitor"],
@@ -257,28 +372,13 @@ def render_prophet_dashboard() -> None:
     with left:
         st.markdown('<div class="panel">', unsafe_allow_html=True)
         st.markdown('<div class="panel-title">Operator Console</div>', unsafe_allow_html=True)
-        st.caption("Provide a homepage (e.g., https://apnews.com), scrape article links, and analyze top words.")
-
-        homepage_url = st.text_input("Source Homepage URL", value="https://apnews.com")
-        max_articles = st.number_input("Max articles to scrape", min_value=5, max_value=50, value=20, step=5)
-        keyword_filter_enabled = st.checkbox("Enable keyword filtering", value=False)
-        keyword = st.text_input("Keyword (article-level match)", value="")
-
-        run_clicked = st.button("Data Scrape", use_container_width=True)
+        st.caption("Use the AP News source banner above for discovery and scrape. Indexing remains a separate step.")
         index_clicked = st.button("Index Data", use_container_width=True)
         clear_clicked = st.button("Reset Results", use_container_width=True)
 
         if clear_clicked:
             st.session_state.analysis_result = None
 
-        if run_clicked:
-            with st.spinner("Fetching homepage and scraping articles..."):
-                st.session_state.analysis_result = run_pipeline(
-                    homepage_url.strip(),
-                    int(max_articles),
-                    keyword=keyword.strip(),
-                    keyword_filter_enabled=keyword_filter_enabled,
-                )
         if index_clicked:
             progress_header = st.empty()
             progress_meta = st.empty()
