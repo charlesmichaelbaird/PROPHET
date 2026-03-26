@@ -1201,9 +1201,9 @@ def scrape_source_articles_by_date(
             if not article_text:
                 diagnostics.append(f"article_parse_empty:{link['url']}")
                 continue
-            if source_key == "bbc":
+            if source_key in {"bbc", "ap"}:
                 declared_lang = extract_document_lang(article_html)
-                if not declared_lang.startswith("en"):
+                if declared_lang and not declared_lang.startswith("en"):
                     diagnostics.append(
                         f"filtered_non_english_lang_decl:{link['url']}:lang={declared_lang or 'missing'}"
                     )

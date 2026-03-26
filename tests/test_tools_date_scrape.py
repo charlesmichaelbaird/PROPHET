@@ -60,6 +60,24 @@ class TestDateScrapeBehavior(unittest.TestCase):
         self.assertEqual(result["articles_attempted"], 1)
         self.assertEqual(len(persisted), 1)
 
+    def test_ap_scrape_skips_non_english_lang_pages(self) -> None:
+        def _fake_discover(source_name: str, query_date, max_links: int):  # type: ignore[no-untyped-def]
+            return ([{"url": "https://example.com/es-story", "title": "ES", "publication_date": "", "lastmod": ""}], [], "")
+
+        with (
+            patch("mcp_server.tools._discover_articles_by_date", side_effect=_fake_discover),
+            patch("mcp_server.tools.fetch_url", return_value='<html lang="es"><p>Hola mundo noticia.</p></html>'),
+            patch("mcp_server.tools.persist_article_if_new") as persist_mock,
+            patch("mcp_server.tools.write_run_index", return_value="run-index.json"),
+        ):
+            result = scrape_source_articles_by_date(source_name="ap", date_str="03/25/2026", max_articles=1)
+
+        self.assertEqual(result["articles_scraped"], 0)
+        self.assertFalse(persist_mock.called)
+        self.assertTrue(
+            any("filtered_non_english_lang_decl" in row for row in result.get("fetch_diagnostics", []))
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

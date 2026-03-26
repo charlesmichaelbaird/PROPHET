@@ -179,6 +179,10 @@ if "ap_stop_requested" not in st.session_state:
     st.session_state.ap_stop_requested = False
 if "bbc_stop_requested" not in st.session_state:
     st.session_state.bbc_stop_requested = False
+if "ap_scrape_started_at" not in st.session_state:
+    st.session_state.ap_scrape_started_at = 0.0
+if "bbc_scrape_started_at" not in st.session_state:
+    st.session_state.bbc_scrape_started_at = 0.0
 
 
 AP_SOURCE_DIRNAME = "apnews-com"
@@ -199,6 +203,7 @@ def _start_date_scrape_worker(source_name: str, date_str: str, max_articles: int
     st.session_state[f"{source_name}_scrape_thread"] = thread
     st.session_state[f"{source_name}_scrape_active"] = True
     st.session_state[f"{source_name}_stop_requested"] = False
+    st.session_state[f"{source_name}_scrape_started_at"] = time.time()
 
 
 def _poll_date_scrape_result(source_name: str, queue_key: str) -> dict | None:
@@ -207,6 +212,15 @@ def _poll_date_scrape_result(source_name: str, queue_key: str) -> dict | None:
         return queue_obj.get_nowait()
     except Empty:
         return None
+
+
+def _render_scrape_loading_bar(source_name: str) -> None:
+    started_at = float(st.session_state.get(f"{source_name}_scrape_started_at", 0.0) or 0.0)
+    elapsed = max(time.time() - started_at, 0.0) if started_at else 0.0
+    # Pulsing-style progress: visually conveys active scrape even without article-level callbacks.
+    pct = int(15 + ((elapsed * 12) % 70))
+    st.progress(pct)
+    st.markdown(f'<div class="small">Scrape in progress · elapsed: <strong>{elapsed:.1f}s</strong></div>', unsafe_allow_html=True)
 
 
 def _is_ollama_api_alive(host: str) -> bool:
@@ -333,6 +347,8 @@ def _format_bbc_user_error(error_message: str) -> str:
 
 st.markdown('<section class="hero">', unsafe_allow_html=True)
 _ensure_ollama_runtime_started(st.session_state.ollama_host)
+model_discovery = discover_ollama_models(base_url=st.session_state.ollama_host, timeout_seconds=2.5)
+st.session_state.ollama_model_discovery = model_discovery
 hero_left, hero_middle, hero_right = st.columns([2.5, 1.8, 1.2], gap="medium")
 with hero_left:
     st.markdown('<p class="brand">PROPHET</p>', unsafe_allow_html=True)
@@ -345,12 +361,45 @@ with hero_left:
         unsafe_allow_html=True,
     )
     render_meta_chips()
+    index_status = get_indexing_status(embedding_model=st.session_state.selected_embedding_model)
+    st.markdown(
+        (
+            '<div class="small">Local runtime: Ollama + SQLite index · '
+            f"Processed articles: <strong>{index_status.get('processed_articles_total', 0)}</strong> · "
+            f"Indexed articles: <strong>{index_status.get('indexed_articles_total', 0)}</strong> · "
+            f"Up to date: <strong>{'Yes' if index_status.get('is_index_up_to_date') else 'No'}</strong> · "
+            f"Ollama available: <strong>{'Yes' if model_discovery.get('available') else 'No'}</strong></div>"
+        ),
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        (
+            '<div class="small">Selected Embedding Model: '
+            f"<strong>{st.session_state.selected_embedding_model or 'None'}</strong> · "
+            'Selected Answer Model: '
+            f"<strong>{st.session_state.selected_answer_model or 'None'}</strong></div>"
+        ),
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        (
+            '<div class="small">Active model index root: '
+            f"<strong>{index_status.get('active_model_index_root', 'N/A')}</strong></div>"
+        ),
+        unsafe_allow_html=True,
+    )
+    source_counts = index_status.get("indexed_counts_by_source", {}) or {}
+    if source_counts:
+        st.markdown(
+            '<div class="small">Indexed by source (active model): '
+            + " · ".join(f"{source}: {count}" for source, count in sorted(source_counts.items()))
+            + "</div>",
+            unsafe_allow_html=True,
+        )
 
 with hero_middle:
     st.markdown('<div class="panel">', unsafe_allow_html=True)
     st.markdown('<div class="panel-title">Local Runtime Models</div>', unsafe_allow_html=True)
-    model_discovery = discover_ollama_models(base_url=st.session_state.ollama_host, timeout_seconds=2.5)
-    st.session_state.ollama_model_discovery = model_discovery
     available_models = model_discovery.get("models", [])
     embed_candidates = model_discovery.get("embedding_candidates", []) or available_models
     answer_candidates = model_discovery.get("answer_candidates", []) or available_models
@@ -564,6 +613,7 @@ with ap_col:
         st.session_state.analysis_result = ap_result
         st.session_state.ap_scrape_active = False
         st.session_state.ap_scrape_thread = None
+        st.session_state.ap_scrape_started_at = 0.0
         ap_ok = ap_result.get("ok") == "true"
         if ap_ok:
             scraped = ap_result.get("articles_scraped", 0)
@@ -601,6 +651,7 @@ with ap_col:
 
     if st.session_state.ap_scrape_active:
         st.markdown('<div class="small"><strong>Scrape active…</strong></div>', unsafe_allow_html=True)
+        _render_scrape_loading_bar("ap")
     if st.session_state.ap_scrape_feedback:
         st.markdown(f'<div class="small">{st.session_state.ap_scrape_feedback}</div>', unsafe_allow_html=True)
     elif query_result and query_result.get("ok") == "true":
@@ -693,6 +744,7 @@ with bbc_col:
         st.session_state.analysis_result = bbc_result
         st.session_state.bbc_scrape_active = False
         st.session_state.bbc_scrape_thread = None
+        st.session_state.bbc_scrape_started_at = 0.0
         bbc_ok = bbc_result.get("ok") == "true"
         if bbc_ok:
             bbc_scraped = bbc_result.get("articles_scraped", 0)
@@ -743,6 +795,7 @@ with bbc_col:
 
     if st.session_state.bbc_scrape_active:
         st.markdown('<div class="small"><strong>Scrape active…</strong></div>', unsafe_allow_html=True)
+        _render_scrape_loading_bar("bbc")
     if st.session_state.bbc_scrape_feedback:
         st.markdown(f'<div class="small">{st.session_state.bbc_scrape_feedback}</div>', unsafe_allow_html=True)
     elif bbc_query_result and bbc_query_result.get("ok") == "true":
@@ -787,42 +840,7 @@ def render_prophet_dashboard() -> None:
         ask_clicked = st.button("Ask The Prophet", use_container_width=True)
 
         result = st.session_state.analysis_result
-        index_status = get_indexing_status(embedding_model=st.session_state.selected_embedding_model)
         model_discovery = st.session_state.ollama_model_discovery or {}
-        st.markdown(
-            (
-                '<div class="small">Local runtime: Ollama + SQLite index · '
-                f"Processed articles: <strong>{index_status.get('processed_articles_total', 0)}</strong> · "
-                f"Indexed articles: <strong>{index_status.get('indexed_articles_total', 0)}</strong> · "
-                f"Up to date: <strong>{'Yes' if index_status.get('is_index_up_to_date') else 'No'}</strong> · "
-                f"Ollama available: <strong>{'Yes' if model_discovery.get('available') else 'No'}</strong></div>"
-            ),
-            unsafe_allow_html=True,
-        )
-        st.markdown(
-            (
-                '<div class="small">Selected Embedding Model: '
-                f"<strong>{st.session_state.selected_embedding_model or 'None'}</strong> · "
-                'Selected Answer Model: '
-                f"<strong>{st.session_state.selected_answer_model or 'None'}</strong></div>"
-            ),
-            unsafe_allow_html=True,
-        )
-        st.markdown(
-            (
-                '<div class="small">Active model index root: '
-                f"<strong>{index_status.get('active_model_index_root', 'N/A')}</strong></div>"
-            ),
-            unsafe_allow_html=True,
-        )
-        source_counts = index_status.get("indexed_counts_by_source", {}) or {}
-        if source_counts:
-            st.markdown(
-                '<div class="small">Indexed by source (active model): '
-                + " · ".join(f"{source}: {count}" for source, count in sorted(source_counts.items()))
-                + "</div>",
-                unsafe_allow_html=True,
-            )
         if not model_discovery.get("available") and model_discovery.get("error"):
             st.warning(model_discovery.get("error"))
         if ask_clicked:
