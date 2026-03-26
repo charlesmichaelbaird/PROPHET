@@ -69,6 +69,10 @@ html, body, [data-testid="stAppViewContainer"], .stApp {
   border-radius: 10px; border: 1px solid rgba(138, 183, 255, 0.4); background: linear-gradient(130deg, #163769, #1f5f8d);
   color: #eaf5ff; font-weight: 700;
 }
+[data-testid="stToggle"] [role="switch"][aria-checked="true"] {
+  background-color: #1f9d55 !important;
+  border-color: #1f9d55 !important;
+}
 [data-testid="stHorizontalBlock"] [data-baseweb="tab-list"] {
   gap: 0.5rem;
 }
@@ -226,7 +230,7 @@ def _count_locally_scraped_ap_articles() -> int:
 
 
 st.markdown('<section class="hero">', unsafe_allow_html=True)
-hero_left, hero_right = st.columns([3.4, 1.2], gap="medium")
+hero_left, hero_middle, hero_right = st.columns([2.5, 1.8, 1.2], gap="medium")
 with hero_left:
     st.markdown('<p class="brand">PROPHET</p>', unsafe_allow_html=True)
     st.markdown(
@@ -238,6 +242,71 @@ with hero_left:
         unsafe_allow_html=True,
     )
     render_meta_chips()
+
+with hero_middle:
+    st.markdown('<div class="panel">', unsafe_allow_html=True)
+    st.markdown('<div class="panel-title">Local Runtime Models</div>', unsafe_allow_html=True)
+    model_discovery = discover_ollama_models(base_url=st.session_state.ollama_host, timeout_seconds=2.5)
+    st.session_state.ollama_model_discovery = model_discovery
+    available_models = model_discovery.get("models", [])
+    embed_candidates = model_discovery.get("embedding_candidates", []) or available_models
+    answer_candidates = model_discovery.get("answer_candidates", []) or available_models
+
+    if available_models:
+        if st.session_state.selected_embedding_model not in embed_candidates:
+            st.session_state.selected_embedding_model = embed_candidates[0]
+        if st.session_state.selected_answer_model not in answer_candidates:
+            st.session_state.selected_answer_model = answer_candidates[0]
+    else:
+        st.session_state.selected_embedding_model = ""
+        st.session_state.selected_answer_model = ""
+
+    if model_discovery.get("available"):
+        st.markdown(
+            f'<div class="small">Ollama models discovered: <strong>{len(available_models)}</strong></div>',
+            unsafe_allow_html=True,
+        )
+        st.selectbox(
+            "Embedding Model",
+            options=embed_candidates,
+            index=embed_candidates.index(st.session_state.selected_embedding_model),
+            key="selected_embedding_model",
+        )
+        st.selectbox(
+            "Answer Model",
+            options=answer_candidates,
+            index=answer_candidates.index(st.session_state.selected_answer_model),
+            key="selected_answer_model",
+        )
+    else:
+        st.markdown('<div class="small">Ollama unavailable: model dropdowns are disabled.</div>', unsafe_allow_html=True)
+        st.selectbox("Embedding Model", options=["No models available"], index=0, disabled=True)
+        st.selectbox("Answer Model", options=["No models available"], index=0, disabled=True)
+
+    index_clicked = st.button("Index Data", use_container_width=True)
+    if index_clicked:
+        with st.spinner("Indexing saved local corpus from /data ..."):
+            st.session_state.index_data_feedback = ingest_new_articles(
+                embedding_model=st.session_state.selected_embedding_model,
+                answer_model=st.session_state.selected_answer_model,
+            )
+
+    index_feedback = st.session_state.index_data_feedback
+    if index_feedback:
+        if not index_feedback.get("error"):
+            inspected = index_feedback.get("total_discovered", index_feedback.get("processed_articles_total", 0))
+            st.markdown(
+                (
+                    '<div class="small">Index complete · '
+                    f"Inspected: <strong>{inspected}</strong> · "
+                    f"Newly indexed: <strong>{index_feedback.get('new_articles_indexed', 0)}</strong> · "
+                    f"New chunks: <strong>{index_feedback.get('new_chunks_indexed', 0)}</strong></div>"
+                ),
+                unsafe_allow_html=True,
+            )
+        else:
+            st.warning(index_feedback.get("error", "Indexing failed."))
+    st.markdown('</div>', unsafe_allow_html=True)
 
 with hero_right:
     st.markdown('<div class="panel">', unsafe_allow_html=True)
@@ -373,144 +442,7 @@ view = st.radio(
 )
 
 def render_prophet_dashboard() -> None:
-    left, right = st.columns([1.05, 1.6], gap="large")
-
-    with left:
-        st.markdown('<div class="panel">', unsafe_allow_html=True)
-        st.markdown('<div class="panel-title">Operator Console</div>', unsafe_allow_html=True)
-        st.caption("Use the AP News source banner above for discovery and scrape. Indexing remains a separate step.")
-        model_discovery = discover_ollama_models(base_url=st.session_state.ollama_host, timeout_seconds=2.5)
-        st.session_state.ollama_model_discovery = model_discovery
-        available_models = model_discovery.get("models", [])
-        embed_candidates = model_discovery.get("embedding_candidates", []) or available_models
-        answer_candidates = model_discovery.get("answer_candidates", []) or available_models
-
-        if available_models:
-            if st.session_state.selected_embedding_model not in embed_candidates:
-                st.session_state.selected_embedding_model = embed_candidates[0]
-            if st.session_state.selected_answer_model not in answer_candidates:
-                st.session_state.selected_answer_model = answer_candidates[0]
-        else:
-            st.session_state.selected_embedding_model = ""
-            st.session_state.selected_answer_model = ""
-
-        if model_discovery.get("available"):
-            st.markdown(
-                f'<div class="small">Ollama models discovered: <strong>{len(available_models)}</strong></div>',
-                unsafe_allow_html=True,
-            )
-        else:
-            st.markdown('<div class="small">Ollama unavailable: model dropdowns are disabled.</div>', unsafe_allow_html=True)
-
-        if model_discovery.get("available"):
-            st.selectbox(
-                "Embedding Model",
-                options=embed_candidates,
-                index=embed_candidates.index(st.session_state.selected_embedding_model),
-                key="selected_embedding_model",
-            )
-            st.selectbox(
-                "Answer Model",
-                options=answer_candidates,
-                index=answer_candidates.index(st.session_state.selected_answer_model),
-                key="selected_answer_model",
-            )
-        else:
-            st.selectbox("Embedding Model", options=["No models available"], index=0, disabled=True)
-            st.selectbox("Answer Model", options=["No models available"], index=0, disabled=True)
-        index_clicked = st.button("Index Data", use_container_width=True)
-        clear_clicked = st.button("Reset Results", use_container_width=True)
-
-        if clear_clicked:
-            st.session_state.analysis_result = None
-
-        if index_clicked:
-            progress_header = st.empty()
-            progress_meta = st.empty()
-            progress_step = st.empty()
-            progress_bar = st.progress(0.0)
-            progress_header.markdown('<div class="small">Indexing started…</div>', unsafe_allow_html=True)
-
-            progress_state = {
-                "eligible_for_indexing": 0,
-                "already_indexed": 0,
-                "total_discovered": 0,
-                "indexed_so_far": 0,
-            }
-
-            def _on_progress(event: dict) -> None:
-                if event.get("event") == "scan":
-                    progress_state["eligible_for_indexing"] = int(event.get("eligible_for_indexing", 0))
-                    progress_state["already_indexed"] = int(event.get("already_indexed", 0))
-                    progress_state["total_discovered"] = int(event.get("total_discovered", 0))
-                    progress_meta.markdown(
-                        (
-                            '<div class="small">Scanning processed corpus only: '
-                            f"<strong>{event.get('processed_scan_directory', '')}</strong><br/>"
-                            f"Discovered: <strong>{progress_state['total_discovered']}</strong> · "
-                            f"Eligible: <strong>{progress_state['eligible_for_indexing']}</strong> · "
-                            f"Already indexed/skipped: <strong>{progress_state['already_indexed']}</strong> · "
-                            f"Remaining: <strong>{event.get('remaining', 0)}</strong></div>"
-                        ),
-                        unsafe_allow_html=True,
-                    )
-                    progress_bar.progress(0.0 if progress_state["eligible_for_indexing"] else 1.0)
-                elif event.get("event") == "step":
-                    title = event.get("title", "Untitled")
-                    step = event.get("step", "")
-                    pos = event.get("article_position", 0)
-                    total = event.get("total_to_index", 0)
-                    progress_step.markdown(
-                        f'<div class="small">[{pos}/{total}] {title} · {step}</div>',
-                        unsafe_allow_html=True,
-                    )
-                elif event.get("event") == "article_done":
-                    indexed_so_far = int(event.get("indexed_so_far", 0))
-                    total = int(event.get("total_to_index", 0))
-                    progress_state["indexed_so_far"] = indexed_so_far
-                    fraction = (indexed_so_far / total) if total else 1.0
-                    progress_bar.progress(min(max(fraction, 0.0), 1.0))
-                    progress_header.markdown(
-                        f'<div class="small">Indexing progress: <strong>{indexed_so_far} / {total}</strong> articles indexed</div>',
-                        unsafe_allow_html=True,
-                    )
-
-            with st.spinner("Indexing saved local corpus from /data ..."):
-                st.session_state.index_data_feedback = ingest_new_articles(
-                    progress_callback=_on_progress,
-                    embedding_model=st.session_state.selected_embedding_model,
-                    answer_model=st.session_state.selected_answer_model,
-                )
-
-        index_feedback = st.session_state.index_data_feedback
-        if index_feedback:
-            if not index_feedback.get("error"):
-                inspected = index_feedback.get("total_discovered", index_feedback.get("processed_articles_total", 0))
-                new_articles = index_feedback.get("new_articles_indexed", 0)
-                already_indexed = index_feedback.get(
-                    "already_indexed_articles",
-                    max(int(inspected) - int(new_articles), 0),
-                )
-                new_chunks = index_feedback.get("new_chunks_indexed", 0)
-                st.markdown(
-                    (
-                        '<div class="small">Index run complete · '
-                        f"Processed scan dir: <strong>{index_feedback.get('processed_scan_directory', 'data/processed')}</strong> · "
-                        f"Inspected: <strong>{inspected}</strong> · "
-                        f"Newly indexed articles: <strong>{new_articles}</strong> · "
-                        f"Already indexed/skipped: <strong>{already_indexed}</strong> · "
-                        f"New chunks: <strong>{new_chunks}</strong> · "
-                        f"Embedding model: <strong>{index_feedback.get('selected_embedding_model') or st.session_state.selected_embedding_model or 'N/A'}</strong> · "
-                        f"Answer model: <strong>{index_feedback.get('selected_answer_model') or st.session_state.selected_answer_model or 'N/A'}</strong></div>"
-                    ),
-                    unsafe_allow_html=True,
-                )
-            else:
-                st.warning(index_feedback.get("error", "Indexing failed."))
-
-        st.markdown('</div>', unsafe_allow_html=True)
-
-    with right:
+    with st.container():
         st.markdown('<div class="panel">', unsafe_allow_html=True)
         st.markdown('<div class="panel-title">Ask The Prophet</div>', unsafe_allow_html=True)
         st.caption("Query your scraped corpus with local LLM (Ollama) when available, with extractive fallback when unavailable.")
