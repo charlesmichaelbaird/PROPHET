@@ -3,7 +3,13 @@
 from __future__ import annotations
 
 from mcp_server.rag import ingest_new_articles
-from mcp_server.tools import analyze_homepage, ask_the_prophet, query_site_article_count
+from mcp_server.tools import (
+    analyze_homepage,
+    ask_the_prophet,
+    query_site_article_count,
+    query_source_article_count_by_date,
+    scrape_source_articles_by_date,
+)
 
 
 def run_pipeline(
@@ -129,10 +135,52 @@ def run_index_data() -> dict:
         }
 
 
+def run_article_count_query_by_date(source_name: str, date_str: str, max_links: int = 250) -> dict:
+    """Run lightweight date-based discovery-only count query."""
+    try:
+        result = query_source_article_count_by_date(source_name=source_name, date_str=date_str, max_links=max_links)
+        return {"ok": "true", "error": "", **result}
+    except ValueError as exc:
+        return {"ok": "false", "error": f"Invalid date/source input: {exc}", "links_found": 0, "preview": []}
+    except Exception as exc:
+        return {"ok": "false", "error": f"Date-based count query failed: {exc}", "links_found": 0, "preview": []}
+
+
+def run_pipeline_by_date(source_name: str, date_str: str, max_articles: int = 200) -> dict:
+    """Run full date-based article scrape + processing pipeline."""
+    try:
+        result = scrape_source_articles_by_date(source_name=source_name, date_str=date_str, max_articles=max_articles)
+        return {"ok": "true", "error": "", **result}
+    except ValueError as exc:
+        return {
+            "ok": "false",
+            "error": f"Invalid date/source input: {exc}",
+            "links_found": 0,
+            "articles_attempted": 0,
+            "articles_scraped": 0,
+            "articles_failed": 0,
+            "scraped_preview": [],
+            "fetch_diagnostics": [],
+        }
+    except Exception as exc:
+        return {
+            "ok": "false",
+            "error": f"Date-based scrape failed: {exc}",
+            "links_found": 0,
+            "articles_attempted": 0,
+            "articles_scraped": 0,
+            "articles_failed": 0,
+            "scraped_preview": [],
+            "fetch_diagnostics": [],
+        }
+
+
 TOOLS = {
     "analyze_homepage": analyze_homepage,
     "run_pipeline": run_pipeline,
     "run_article_count_query": run_article_count_query,
+    "run_article_count_query_by_date": run_article_count_query_by_date,
     "run_ask_the_prophet": run_ask_the_prophet,
     "run_index_data": run_index_data,
+    "run_pipeline_by_date": run_pipeline_by_date,
 }

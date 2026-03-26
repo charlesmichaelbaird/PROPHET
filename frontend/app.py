@@ -20,7 +20,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from mcp_server.server import run_article_count_query, run_ask_the_prophet, run_pipeline
+from mcp_server.server import (
+    run_article_count_query_by_date,
+    run_ask_the_prophet,
+    run_pipeline_by_date,
+)
 from mcp_server.rag import discover_ollama_models, get_indexing_status, ingest_new_articles
 from frontend.btc_data import fetch_btc_history, fetch_spot_btc_price
 
@@ -152,12 +156,14 @@ if "reuters_query_result" not in st.session_state:
     st.session_state.reuters_query_result = {}
 if "reuters_scrape_feedback" not in st.session_state:
     st.session_state.reuters_scrape_feedback = ""
+if "ap_selected_date" not in st.session_state:
+    st.session_state.ap_selected_date = datetime.now(timezone.utc).strftime("%m/%d/%Y")
+if "reuters_selected_date" not in st.session_state:
+    st.session_state.reuters_selected_date = datetime.now(timezone.utc).strftime("%m/%d/%Y")
 
 
-AP_NEWS_URL = "https://apnews.com/"
 AP_SOURCE_DIRNAME = "apnews-com"
 AP_SCRAPE_FALLBACK_MAX_ARTICLES = 200
-REUTERS_URL = "https://www.reuters.com/"
 REUTERS_SOURCE_DIRNAME = "www-reuters-com"
 REUTERS_SCRAPE_FALLBACK_MAX_ARTICLES = 200
 
@@ -437,31 +443,41 @@ with ap_col:
             '<div class="source-card">'
             '<div style="font-size:1.35rem;">📰</div>'
             '<div class="source-card-label">AP News</div>'
-            '<div class="source-card-url">https://apnews.com/</div>'
+            '<div class="source-card-url">Date-based archive discovery</div>'
             "</div>"
         ),
         unsafe_allow_html=True,
     )
 
-    query_clicked = st.button("Query Site Article Count", use_container_width=True)
+    ap_query_date_col, ap_query_button_col = st.columns([1.25, 1], gap="small")
+    with ap_query_date_col:
+        st.text_input(
+            "Date (MM/DD/YYYY)",
+            key="ap_selected_date",
+            label_visibility="collapsed",
+            placeholder="MM/DD/YYYY",
+        )
+    with ap_query_button_col:
+        query_clicked = st.button("Query Site Article Count", use_container_width=True, key="ap_query_btn")
+
     scrape_clicked = st.button("Data Scrape", use_container_width=True)
 
     if query_clicked:
-        with st.spinner("Querying AP News homepage links..."):
-            st.session_state.ap_query_result = run_article_count_query(
-                homepage_url=AP_NEWS_URL,
-                max_links=220,
+        with st.spinner("Querying AP News archive metadata for selected date..."):
+            st.session_state.ap_query_result = run_article_count_query_by_date(
+                source_name="ap",
+                date_str=st.session_state.ap_selected_date,
+                max_links=250,
             )
 
     if scrape_clicked:
         latest_query = st.session_state.ap_query_result if st.session_state.ap_query_result.get("ok") == "true" else {}
         requested_scrape_count = int(latest_query.get("links_found", 0)) or AP_SCRAPE_FALLBACK_MAX_ARTICLES
-        with st.spinner("Running AP News data scrape..."):
-            st.session_state.analysis_result = run_pipeline(
-                AP_NEWS_URL,
-                requested_scrape_count,
-                keyword="",
-                keyword_filter_enabled=False,
+        with st.spinner("Running AP News date-based data scrape..."):
+            st.session_state.analysis_result = run_pipeline_by_date(
+                source_name="ap",
+                date_str=st.session_state.ap_selected_date,
+                max_articles=requested_scrape_count,
             )
         result_ok = st.session_state.analysis_result.get("ok") == "true"
         if result_ok:
@@ -502,6 +518,10 @@ with ap_col:
             ),
             unsafe_allow_html=True,
         )
+    st.markdown(
+        f'<div class="small">Selected date: <strong>{st.session_state.ap_selected_date}</strong></div>',
+        unsafe_allow_html=True,
+    )
 
     scraped_local_count = _count_locally_scraped_ap_articles()
     discovered_count = query_result.get("links_found", 0) if query_result else 0
@@ -520,17 +540,27 @@ with reuters_col:
             '<div class="source-card">'
             '<div style="font-size:1.35rem;">🌐</div>'
             '<div class="source-card-label">Reuters</div>'
-            '<div class="source-card-url">https://www.reuters.com/</div>'
+            '<div class="source-card-url">Date-based archive discovery</div>'
             "</div>"
         ),
         unsafe_allow_html=True,
     )
 
-    reuters_query_clicked = st.button(
-        "Query Site Article Count",
-        key="reuters_query_site_article_count",
-        use_container_width=True,
-    )
+    reuters_query_date_col, reuters_query_button_col = st.columns([1.25, 1], gap="small")
+    with reuters_query_date_col:
+        st.text_input(
+            "Date (MM/DD/YYYY)",
+            key="reuters_selected_date",
+            label_visibility="collapsed",
+            placeholder="MM/DD/YYYY",
+        )
+    with reuters_query_button_col:
+        reuters_query_clicked = st.button(
+            "Query Site Article Count",
+            key="reuters_query_site_article_count",
+            use_container_width=True,
+        )
+
     reuters_scrape_clicked = st.button(
         "Data Scrape",
         key="reuters_data_scrape",
@@ -538,10 +568,11 @@ with reuters_col:
     )
 
     if reuters_query_clicked:
-        with st.spinner("Querying Reuters homepage links..."):
-            st.session_state.reuters_query_result = run_article_count_query(
-                homepage_url=REUTERS_URL,
-                max_links=220,
+        with st.spinner("Querying Reuters archive metadata for selected date..."):
+            st.session_state.reuters_query_result = run_article_count_query_by_date(
+                source_name="reuters",
+                date_str=st.session_state.reuters_selected_date,
+                max_links=250,
             )
 
     if reuters_scrape_clicked:
@@ -551,12 +582,11 @@ with reuters_col:
         requested_reuters_scrape_count = (
             int(latest_reuters_query.get("links_found", 0)) or REUTERS_SCRAPE_FALLBACK_MAX_ARTICLES
         )
-        with st.spinner("Running Reuters data scrape..."):
-            reuters_result = run_pipeline(
-                REUTERS_URL,
-                requested_reuters_scrape_count,
-                keyword="",
-                keyword_filter_enabled=False,
+        with st.spinner("Running Reuters date-based data scrape..."):
+            reuters_result = run_pipeline_by_date(
+                source_name="reuters",
+                date_str=st.session_state.reuters_selected_date,
+                max_articles=requested_reuters_scrape_count,
             )
             st.session_state.analysis_result = reuters_result
 
@@ -613,6 +643,10 @@ with reuters_col:
             ),
             unsafe_allow_html=True,
         )
+    st.markdown(
+        f'<div class="small">Selected date: <strong>{st.session_state.reuters_selected_date}</strong></div>',
+        unsafe_allow_html=True,
+    )
 
     reuters_scraped_local_count = _count_locally_scraped_reuters_articles()
     reuters_discovered_count = reuters_query_result.get("links_found", 0) if reuters_query_result else 0
